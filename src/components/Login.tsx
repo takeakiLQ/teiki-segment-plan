@@ -41,7 +41,7 @@ export default function Login({ onSkip }: { onSkip: () => void }) {
         <p>ログインすると計画をクラウド保存できます。</p>
 
         {!firebaseReady && (
-          <div style={{ background: '#1f2937', border: '1px solid #334155', padding: 10, borderRadius: 8, marginBottom: 12, fontSize: 12 }}>
+          <div style={{ background: '#fef3c7', border: '1px solid #fcd34d', color: '#92400e', padding: 10, borderRadius: 8, marginBottom: 12, fontSize: 12 }}>
             Firebase 未設定です。<br />
             <code>.env</code> を設定するとログイン機能が有効になります。<br />
             未設定でもローカル保存でお試しいただけます。

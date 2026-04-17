@@ -51,31 +51,31 @@ export default function Dashboard() {
         <div className="row between">
           <h3>月次 売上・原価・粗利</h3>
           <div className="legend">
-            <span><i style={{ background: '#38bdf8' }} />売上</span>
-            <span><i style={{ background: '#ef4444' }} />原価</span>
-            <span><i style={{ background: '#22c55e' }} />粗利</span>
-            <span><i style={{ background: '#f59e0b' }} />粗利率</span>
+            <span><i style={{ background: '#0ea5e9' }} />売上</span>
+            <span><i style={{ background: '#dc2626' }} />原価</span>
+            <span><i style={{ background: '#16a34a' }} />粗利</span>
+            <span><i style={{ background: '#d97706' }} />粗利率</span>
           </div>
         </div>
         <div style={{ width: '100%', height: 320 }}>
           <ResponsiveContainer>
             <ComposedChart data={chartData}>
-              <CartesianGrid stroke="#334155" strokeDasharray="3 3" />
-              <XAxis dataKey="month" stroke="#94a3b8" />
-              <YAxis yAxisId="left" stroke="#94a3b8" tickFormatter={(v) => `${(v / 10000).toFixed(0)}万`} />
-              <YAxis yAxisId="right" orientation="right" stroke="#f59e0b" unit="%" />
+              <CartesianGrid stroke="#e2e8f0" strokeDasharray="3 3" />
+              <XAxis dataKey="month" stroke="#64748b" />
+              <YAxis yAxisId="left" stroke="#64748b" tickFormatter={(v) => `${(v / 10000).toFixed(0)}万`} />
+              <YAxis yAxisId="right" orientation="right" stroke="#d97706" unit="%" />
               <Tooltip
-                contentStyle={{ background: '#0b1220', border: '1px solid #334155' }}
+                contentStyle={{ background: '#fff', border: '1px solid #cbd5e1', color: '#0f172a' }}
                 formatter={(value: number, name) => {
                   if (name === '粗利率') return [`${value}%`, name]
                   return [`¥${yen(value)}`, name]
                 }}
               />
               <Legend />
-              <Bar yAxisId="left" dataKey="売上" fill="#38bdf8" />
-              <Bar yAxisId="left" dataKey="原価" fill="#ef4444" />
-              <Line yAxisId="left" dataKey="粗利" stroke="#22c55e" strokeWidth={2} />
-              <Line yAxisId="right" dataKey="粗利率" stroke="#f59e0b" strokeWidth={2} />
+              <Bar yAxisId="left" dataKey="売上" fill="#0ea5e9" />
+              <Bar yAxisId="left" dataKey="原価" fill="#dc2626" />
+              <Line yAxisId="left" dataKey="粗利" stroke="#16a34a" strokeWidth={2} />
+              <Line yAxisId="right" dataKey="粗利率" stroke="#d97706" strokeWidth={2} />
             </ComposedChart>
           </ResponsiveContainer>
         </div>
@@ -86,18 +86,18 @@ export default function Dashboard() {
         <div style={{ width: '100%', height: 280 }}>
           <ResponsiveContainer>
             <BarChart data={categoryData}>
-              <CartesianGrid stroke="#334155" strokeDasharray="3 3" />
-              <XAxis dataKey="month" stroke="#94a3b8" />
-              <YAxis stroke="#94a3b8" tickFormatter={(v) => `${(v / 10000).toFixed(0)}万`} />
+              <CartesianGrid stroke="#e2e8f0" strokeDasharray="3 3" />
+              <XAxis dataKey="month" stroke="#64748b" />
+              <YAxis stroke="#64748b" tickFormatter={(v) => `${(v / 10000).toFixed(0)}万`} />
               <Tooltip
-                contentStyle={{ background: '#0b1220', border: '1px solid #334155' }}
+                contentStyle={{ background: '#fff', border: '1px solid #cbd5e1', color: '#0f172a' }}
                 formatter={(v: number, n) => [`¥${yen(v)}`, n]}
               />
               <Legend />
-              <Bar dataKey="パートナー" stackId="cost" fill="#60a5fa" />
-              <Bar dataKey="協力会社" stackId="cost" fill="#a78bfa" />
-              <Bar dataKey="D職" stackId="cost" fill="#f472b6" />
-              <Bar dataKey="FS" stackId="cost" fill="#34d399" />
+              <Bar dataKey="パートナー" stackId="cost" fill="#2563eb" />
+              <Bar dataKey="協力会社" stackId="cost" fill="#7c3aed" />
+              <Bar dataKey="D職" stackId="cost" fill="#db2777" />
+              <Bar dataKey="FS" stackId="cost" fill="#059669" />
             </BarChart>
           </ResponsiveContainer>
         </div>

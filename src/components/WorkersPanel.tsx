@@ -160,7 +160,7 @@ function WorkerCard({
       </div>
 
       {open && (
-        <div style={{ marginTop: 12, borderTop: '1px dashed #334155', paddingTop: 12 }}>
+        <div style={{ marginTop: 12, borderTop: '1px dashed #cbd5e1', paddingTop: 12 }}>
           <div className="row between" style={{ marginBottom: 8 }}>
             <div className="muted" style={{ fontSize: 12 }}>仕入単価の改定履歴</div>
             <button className="small" onClick={onAddCc}>＋ 改定を追加</button>

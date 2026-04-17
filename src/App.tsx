@@ -89,7 +89,7 @@ export default function App() {
         <div className="topbar">
           <h2>{NAV.find((n) => n.id === view)?.label}</h2>
           <div className="user">
-            {dirty && <span style={{ color: '#f59e0b' }}>● 未保存の変更</span>}
+            {dirty && <span style={{ color: '#d97706' }}>● 未保存の変更</span>}
             {user ? (
               <>
                 <button className="small" onClick={onSave} disabled={saving}>

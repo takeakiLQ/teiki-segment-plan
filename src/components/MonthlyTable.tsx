@@ -83,9 +83,9 @@ export default function MonthlyTable() {
               <td>新規 / 終了</td>
               {rows.map((r) => (
                 <td className="mono" key={r.month}>
-                  <span style={{ color: '#22c55e' }}>+{r.newProjects}</span>
+                  <span style={{ color: '#16a34a' }}>+{r.newProjects}</span>
                   {' / '}
-                  <span style={{ color: '#ef4444' }}>-{r.endingProjects}</span>
+                  <span style={{ color: '#dc2626' }}>-{r.endingProjects}</span>
                 </td>
               ))}
               <td></td>
