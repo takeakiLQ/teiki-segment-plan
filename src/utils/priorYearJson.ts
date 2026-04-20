@@ -40,6 +40,7 @@
 import type {
   DiagonalUplift,
   MonthlyDiagonalUpliftOverride,
+  PriorYearAnnualSummary,
   PriorYearMonthly,
   PriorYearPlan,
   Ratios,
@@ -117,6 +118,16 @@ export function serializePriorYearJson(py: PriorYearPlan): any {
     if (Object.keys(entry).length > 0) diagonalUpliftByMonth[o.month] = entry
   }
 
+  // 年次集計サマリー
+  const annualSummary: PriorYearAnnualSummary | undefined = py.annualSummary
+    ? {
+        ...(py.annualSummary.acquisitionUnitPrice != null ? { acquisitionUnitPrice: py.annualSummary.acquisitionUnitPrice } : {}),
+        ...(py.annualSummary.acquisitionMarginPct != null ? { acquisitionMarginPct: py.annualSummary.acquisitionMarginPct } : {}),
+        ...(py.annualSummary.terminationUnitPrice != null ? { terminationUnitPrice: py.annualSummary.terminationUnitPrice } : {}),
+        ...(py.annualSummary.terminationMarginPct != null ? { terminationMarginPct: py.annualSummary.terminationMarginPct } : {}),
+      }
+    : undefined
+
   return {
     fiscalYear: py.fiscalYear,
     baseMonth: py.baseMonth,
@@ -130,6 +141,7 @@ export function serializePriorYearJson(py: PriorYearPlan): any {
     diagonalUpliftByMonth,
     months,
     transfers,
+    ...(annualSummary && Object.keys(annualSummary).length > 0 ? { annualSummary } : {}),
   }
 }
 
@@ -333,6 +345,29 @@ export function parsePriorYearJson(
   const diagonalUpliftByMonth: MonthlyDiagonalUpliftOverride[] = [...upliftMap.values()]
     .filter((o) => o.partner !== undefined || o.vendor !== undefined)
 
+  // 年次サマリー
+  let annualSummary: PriorYearAnnualSummary | undefined = base.annualSummary
+  if (isObject(input.annualSummary)) {
+    const s = input.annualSummary
+    annualSummary = { ...(annualSummary ?? {}) }
+    if (s.acquisitionUnitPrice != null) {
+      const v = numOr(s.acquisitionUnitPrice, -1)
+      if (v >= 0) annualSummary.acquisitionUnitPrice = Math.round(v)
+    }
+    if (s.acquisitionMarginPct != null) {
+      const v = numOr(s.acquisitionMarginPct, -1)
+      if (v >= 0) annualSummary.acquisitionMarginPct = v
+    }
+    if (s.terminationUnitPrice != null) {
+      const v = numOr(s.terminationUnitPrice, -1)
+      if (v >= 0) annualSummary.terminationUnitPrice = Math.round(v)
+    }
+    if (s.terminationMarginPct != null) {
+      const v = numOr(s.terminationMarginPct, -1)
+      if (v >= 0) annualSummary.terminationMarginPct = v
+    }
+  }
+
   return {
     fiscalYear,
     baseMonth,
@@ -346,6 +381,7 @@ export function parsePriorYearJson(
     defaultWorkingDays,
     diagonalUplift,
     diagonalUpliftByMonth,
+    ...(annualSummary ? { annualSummary } : {}),
   }
 }
 

@@ -46,6 +46,16 @@ export default function App() {
     return () => unsub()
   }, [setUid])
 
+  // 子コンポーネント（Dashboard のリンクカード等）からの遷移リクエスト
+  useEffect(() => {
+    function handleNav(e: Event) {
+      const detail = (e as CustomEvent).detail as View
+      if (detail) setView(detail)
+    }
+    window.addEventListener('navigate-to-view', handleNav)
+    return () => window.removeEventListener('navigate-to-view', handleNav)
+  }, [])
+
   if (!authReady && firebaseReady) {
     return <div className="login-wrap"><div className="muted">読み込み中…</div></div>
   }

@@ -42,6 +42,21 @@ export interface MonthlyTotal {
   terminationTotal: number
 }
 
+/** FY2026 コホート別 単価・粗利設定
+ *  継続・終了コホートは plan.revenuePerCase と plan.categories[cat].costRate（= 2026-03 snapshot）を使用。
+ *  獲得コホートのみ前年獲得をベースに調整。
+ */
+export interface CohortPricing {
+  /** 前年（FY2025）獲得案件の平均単価（円/1件/日） */
+  priorAcquisitionUnitPrice: number
+  /** FY2026 獲得単価の調整（絶対額 円/日） */
+  acquisitionUnitPriceUpAbs: number
+  /** FY2026 獲得単価の調整（%）— 絶対額と合算 */
+  acquisitionUnitPriceUpPct: number
+  /** セグメント別 1案件1日あたり 粗利UP額（円） */
+  acquisitionProfitUplift: CategoryMap<number>
+}
+
 /** 単価アップ（累積型・還元率付き）
  *  - 適用月以降、売上・粗利にそれぞれ加算
  *  - 複数月の積み上げ（新しいイベントは累計に加わる）
@@ -95,6 +110,27 @@ export interface TransferEvent {
   memo?: string
 }
 
+/** 部分 原価改定（特定カテゴリの N件 に対して 月M以降 +X円/件/日 が継続的に上乗せ） */
+export interface CostRevision {
+  id: string
+  effectiveMonth: string       // yyyy-mm
+  category: WorkerCategory     // 対象カテゴリ
+  count: number                // 対象件数
+  amountPerCaseDay: number     // +X円/件/日（原価増）
+  memo?: string
+}
+
+/** 部分 単価改定（特定カテゴリの N件 に対して 月M以降 売上が +X円/件/日 or +X% 継続加算） */
+export interface PriceRevision {
+  id: string
+  effectiveMonth: string
+  category: WorkerCategory
+  count: number
+  amountPerCaseDay?: number    // +X円/件/日（売上増分・絶対額）
+  pctOfBase?: number           // +X%（revenuePerCase の%）
+  memo?: string
+}
+
 /** 条件変更の対象：
  *  'revenue' = 全体の1日あたり単価（Planレベル）を改定
  *  WorkerCategory = そのカテゴリの原価を改定
@@ -145,17 +181,26 @@ export interface Plan {
   diagonalUplift: DiagonalUplift
   /** 同区分入替 原価引き上げ額の月別上書き */
   diagonalUpliftByMonth: MonthlyDiagonalUpliftOverride[]
-  /** 月次マイスター売上（yyyy-mm → 円・参考KPI・計算には影響しない） */
+  /** 月次マイスター売上（yyyy-mm → 円）。案件プール内の「マイスター代走分」を表す。
+   *  0%原価で、代走先カテゴリの原価率ぶんだけ原価を削減する（粗利増）。売上自体は不変。 */
   meisterRevenueByMonth: Record<string, number>
+  /** マイスターの代走先分布（合計100%）。既定は partner:100 (運送店枠の代走がメイン) */
+  meisterAllocation: CategoryMap<number>
   /** 単価アップ（累積型、還元率付き） */
   priceIncreases: PriceIncrease[]
+  /** FY2026 コホート別単価・粗利設定（継続・終了は plan.revenuePerCase と plan.categories の原価率） */
+  cohortPricing: CohortPricing
   /** 年度予算（売上・粗利） */
   budget: AnnualBudget
 
   /** 入替 */
   transfers: TransferEvent[]
-  /** 条件変更 */
+  /** 条件変更（旧式: 全体単価/カテゴリ原価率の改定） */
   conditionChanges: ConditionChange[]
+  /** 部分 原価改定（N件に対する +X円/件/日 の継続加算） */
+  costRevisions: CostRevision[]
+  /** 部分 単価改定（N件に対する売上の +X円/件/日 or +X% の継続加算） */
+  priceRevisions: PriceRevision[]
   /** 前年実績（参考表示用。計算には影響しない） */
   priorYear?: PriorYearPlan
   updatedAt?: string
@@ -200,6 +245,18 @@ export interface PriorYearMonthly {
   memo?: string
 }
 
+/** 前年実績の年次集計（参考値。計算には影響しない、計画の妥当性チェックと引き継ぎ用） */
+export interface PriorYearAnnualSummary {
+  /** 獲得案件の平均単価（円/日） */
+  acquisitionUnitPrice?: number
+  /** 獲得案件の粗利率（%、合算） */
+  acquisitionMarginPct?: number
+  /** 終了案件の平均単価（円/日） */
+  terminationUnitPrice?: number
+  /** 終了案件の粗利率（%、合算） */
+  terminationMarginPct?: number
+}
+
 /** 前年実績プラン */
 export interface PriorYearPlan {
   /** 会計年度ラベル 例 "FY2025" */
@@ -219,6 +276,8 @@ export interface PriorYearPlan {
   diagonalUplift: DiagonalUplift
   /** 月別上書き */
   diagonalUpliftByMonth: MonthlyDiagonalUpliftOverride[]
+  /** 年次集計サマリー（オプション・参考値） */
+  annualSummary?: PriorYearAnnualSummary
 }
 
 // 計算結果

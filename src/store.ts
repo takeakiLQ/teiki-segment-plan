@@ -30,12 +30,21 @@ export function createEmptyPlan(name = 'メイン計画'): Plan {
     monthlyTotals: [],
     transfers: [],
     conditionChanges: [],
+    costRevisions: [],
+    priceRevisions: [],
     workingDaysByMonth: {},
     defaultWorkingDays: 20,
     diagonalUplift: { partner: 0, vendor: 0 },
     diagonalUpliftByMonth: [],
     meisterRevenueByMonth: {},
+    meisterAllocation: { partner: 100, vendor: 0, employment: 0 },
     priceIncreases: [],
+    cohortPricing: {
+      priorAcquisitionUnitPrice: 0,
+      acquisitionUnitPriceUpAbs: 0,
+      acquisitionUnitPriceUpPct: 0,
+      acquisitionProfitUplift: { partner: 0, vendor: 0, employment: 0 },
+    },
     budget: {
       revenue: 0,
       grossProfit: 0,
@@ -170,7 +179,37 @@ function migratePlan(plan: any): Plan {
   if (!plan.meisterRevenueByMonth || typeof plan.meisterRevenueByMonth !== 'object') {
     plan.meisterRevenueByMonth = {}
   }
+  if (!plan.meisterAllocation || typeof plan.meisterAllocation !== 'object') {
+    plan.meisterAllocation = { partner: 100, vendor: 0, employment: 0 }
+  } else {
+    if (typeof plan.meisterAllocation.partner !== 'number') plan.meisterAllocation.partner = 100
+    if (typeof plan.meisterAllocation.vendor !== 'number') plan.meisterAllocation.vendor = 0
+    if (typeof plan.meisterAllocation.employment !== 'number') plan.meisterAllocation.employment = 0
+  }
   if (!Array.isArray(plan.priceIncreases)) plan.priceIncreases = []
+  if (!Array.isArray(plan.costRevisions)) plan.costRevisions = []
+  if (!Array.isArray(plan.priceRevisions)) plan.priceRevisions = []
+  if (!plan.cohortPricing || typeof plan.cohortPricing !== 'object') {
+    plan.cohortPricing = {
+      priorAcquisitionUnitPrice: 0,
+      acquisitionUnitPriceUpAbs: 0,
+      acquisitionUnitPriceUpPct: 0,
+      acquisitionProfitUplift: { partner: 0, vendor: 0, employment: 0 },
+    }
+  } else {
+    const cp = plan.cohortPricing
+    if (typeof cp.priorAcquisitionUnitPrice !== 'number') cp.priorAcquisitionUnitPrice = 0
+    if (typeof cp.acquisitionUnitPriceUpAbs !== 'number') cp.acquisitionUnitPriceUpAbs = 0
+    if (typeof cp.acquisitionUnitPriceUpPct !== 'number') cp.acquisitionUnitPriceUpPct = 0
+    if (!cp.acquisitionProfitUplift || typeof cp.acquisitionProfitUplift !== 'object') {
+      cp.acquisitionProfitUplift = { partner: 0, vendor: 0, employment: 0 }
+    } else {
+      const u = cp.acquisitionProfitUplift
+      if (typeof u.partner !== 'number') u.partner = 0
+      if (typeof u.vendor !== 'number') u.vendor = 0
+      if (typeof u.employment !== 'number') u.employment = 0
+    }
+  }
 
   if (plan.priorYear) {
     if (!plan.priorYear.workingDaysByMonth || typeof plan.priorYear.workingDaysByMonth !== 'object') plan.priorYear.workingDaysByMonth = {}

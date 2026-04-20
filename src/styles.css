@@ -213,3 +213,109 @@ tr:hover td { background: var(--row-hover); }
 .legend { display: flex; gap: 12px; color: var(--text-muted); font-size: 12px; }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+
+/* =========================================================
+   モバイル対応（スマホで見やすくする）
+   - サイドバー → 画面下部の水平ナビ（親指で押しやすい）
+   - Topbar 圧縮、Tab/Table は横スクロールで対応
+   ========================================================= */
+@media (max-width: 768px) {
+  .app {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr auto;
+    height: 100vh;
+  }
+  .sidebar {
+    order: 2;
+    grid-row: 2;
+    border-right: none;
+    border-top: 1px solid var(--border);
+    padding: 8px;
+    flex-direction: row;
+    gap: 4px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+  .sidebar h1 {
+    display: none; /* タイトルは topbar に統合 */
+  }
+  .nav-item {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    padding: 8px 12px;
+    font-size: 12px;
+    border-radius: 16px;
+    background: var(--bg-subtle);
+  }
+  .nav-item.active { background: var(--accent); color: #fff; }
+  .sidebar > div[style*="flex: 1"] { display: none; }
+  .sidebar > .muted { display: none; } /* ゲストモード表示はスマホでは隠す */
+
+  .main {
+    padding: 10px 12px;
+    grid-row: 1;
+    overflow: auto;
+  }
+  .topbar {
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .topbar h2 {
+    font-size: 15px;
+    flex: 1 1 auto;
+  }
+  .topbar .user {
+    font-size: 11px;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .card {
+    padding: 10px;
+    margin-bottom: 10px;
+    border-radius: 8px;
+  }
+  .card h3 { font-size: 13px; margin: 0 0 8px; }
+
+  .kpi-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+  .kpi {
+    padding: 8px 10px;
+  }
+  .kpi .label { font-size: 10px; }
+  .kpi .value { font-size: 16px; }
+  .kpi .sub { font-size: 10px; }
+
+  .form-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* テーブルは横スクロール、入力サイズは少し小さく */
+  table { font-size: 11px; }
+  input[type="number"], input[type="text"], select {
+    font-size: 14px; /* iOS の自動ズーム回避 (16px) が望ましいが、14 で妥協 */
+    padding: 4px 6px;
+  }
+
+  button.small {
+    padding: 5px 10px;
+    font-size: 11px;
+  }
+
+  /* 2 列グリッド（日計/粗利率の同月比較など）→ モバイルは縦積み */
+  div[style*="gridTemplateColumns: '1fr 1fr'"],
+  div[style*="grid-template-columns: 1fr 1fr"] {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* さらに狭い端末 */
+@media (max-width: 480px) {
+  .kpi-grid { grid-template-columns: 1fr; }
+  .topbar h2 { font-size: 13px; }
+  .main { padding: 8px; }
+}

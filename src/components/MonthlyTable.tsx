@@ -223,6 +223,47 @@ export default function MonthlyTable() {
               <td className="mono">{percent(totalRevenue ? totalProfit / totalRevenue : 0)}</td>
             </tr>
 
+            {/* 実効原価率：同区分uplift等のイベントで変動していく月次の原価率 */}
+            <tr><td colSpan={rows.length + 2} style={{ background: '#f1f5f9', fontWeight: 600 }}>■ セグメント別 実効原価率（月次変動）</td></tr>
+            {WorkerCategoryOrder.map((cat) => {
+              // 期初値（ベース）
+              const baseRate = plan.categories[cat].costRate
+              return (
+                <tr key={`eff-${cat}`}>
+                  <td><span className={`badge ${cat}`}>{WorkerCategoryLabels[cat]}</span></td>
+                  {rows.map((r) => {
+                    const cell = r.byCategory[cat]
+                    const effRate = cell.revenue > 0 ? (cell.cost / cell.revenue) * 100 : 0
+                    const drift = effRate - baseRate
+                    return (
+                      <td className="mono" key={`eff-${cat}-${r.month}`} style={{
+                        color: Math.abs(drift) < 0.01 ? '#64748b' : drift > 0 ? '#dc2626' : '#16a34a',
+                      }}>
+                        {cell.revenue > 0 ? `${effRate.toFixed(2)}%` : '—'}
+                      </td>
+                    )
+                  })}
+                  <td className="mono muted" style={{ fontSize: 11 }}>
+                    期初 {baseRate.toFixed(2)}%
+                  </td>
+                </tr>
+              )
+            })}
+            <tr>
+              <td><strong>全体 実効原価率</strong></td>
+              {rows.map((r) => {
+                const rate = r.totalRevenue > 0 ? ((r.totalRevenue - r.totalProfit) / r.totalRevenue) * 100 : 0
+                return (
+                  <td className="mono" key={`eff-total-${r.month}`} style={{ fontWeight: 700 }}>
+                    {r.totalRevenue > 0 ? `${rate.toFixed(2)}%` : '—'}
+                  </td>
+                )
+              })}
+              <td className="mono" style={{ fontWeight: 700 }}>
+                {totalRevenue > 0 ? `${((totalCost / totalRevenue) * 100).toFixed(2)}%` : '—'}
+              </td>
+            </tr>
+
             {hasPriceUp && (
               <>
                 <tr><td colSpan={rows.length + 2} style={{ background: '#fef3c7', fontWeight: 600, color: '#92400e' }}>■ 単価アップ（累積・別計算で上記売上/粗利に加算済）</td></tr>

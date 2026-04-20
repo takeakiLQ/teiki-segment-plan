@@ -326,8 +326,8 @@ function BudgetCard() {
   )
 }
 
-/** FY2026 マイスター見込みカード */
-function MeisterCard() {
+/** FY2026 マイスター見込みカード（EventsPanel からも利用） */
+export function MeisterCard() {
   const plan = usePlanStore((s) => s.plan)
   const setPlan = usePlanStore((s) => s.setPlan)
   const months = useMemo(() => monthsRange(plan.baseMonth, plan.horizonMonths), [plan.baseMonth, plan.horizonMonths])
@@ -414,8 +414,76 @@ function MeisterCard() {
         <div>
           <h3 style={{ color: '#6b21a8', margin: 0 }}>FY2026 マイスター見込み</h3>
           <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-            営業社員が代走する分の売上見込み（情報KPI）。計算には影響しません。
+            営業社員が代走する分の売上見込み。<strong>売上は案件プール不変、代走先の原価率ぶん原価が減って粗利が増える</strong>。
           </div>
+        </div>
+      </div>
+
+      {/* 代走先 allocation UI */}
+      <div className="card" style={{ background: '#fff', marginTop: 8 }}>
+        <h3 style={{ fontSize: 13, margin: '0 0 8px' }}>代走先の分布（合計100%）</h3>
+        <div className="muted" style={{ fontSize: 11, marginBottom: 8 }}>
+          マイスターがどのカテゴリ枠の代走をしているかの分布。浮く原価の計算に使われます（運送店枠の代走なら運送店原価率ぶんの粗利増）。
+        </div>
+        <div className="row" style={{ gap: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+          {(['partner', 'vendor', 'employment'] as const).map((cat) => {
+            const alloc = plan.meisterAllocation ?? { partner: 100, vendor: 0, employment: 0 }
+            const val = alloc[cat] ?? 0
+            const labels = { partner: '運送店', vendor: '業者', employment: '社員' }
+            return (
+              <div key={cat} className="row" style={{ gap: 4, alignItems: 'center' }}>
+                <span className={`badge ${cat}`}>{labels[cat]}</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={val}
+                  onChange={(e) => {
+                    const v = Math.max(0, Math.min(100, Math.round(Number(e.target.value) || 0)))
+                    setPlan((p) => ({
+                      ...p,
+                      meisterAllocation: {
+                        ...(p.meisterAllocation ?? { partner: 100, vendor: 0, employment: 0 }),
+                        [cat]: v,
+                      },
+                    }))
+                  }}
+                  style={{ width: 60, textAlign: 'right' }}
+                />
+                <span className="muted" style={{ fontSize: 11 }}>%</span>
+              </div>
+            )
+          })}
+          <div className="muted" style={{ fontSize: 11 }}>
+            合計:{' '}
+            <strong
+              style={{
+                color:
+                  ((plan.meisterAllocation?.partner ?? 0) +
+                    (plan.meisterAllocation?.vendor ?? 0) +
+                    (plan.meisterAllocation?.employment ?? 0)) ===
+                  100
+                    ? '#16a34a'
+                    : '#dc2626',
+              }}
+            >
+              {(plan.meisterAllocation?.partner ?? 0) +
+                (plan.meisterAllocation?.vendor ?? 0) +
+                (plan.meisterAllocation?.employment ?? 0)}
+              %
+            </strong>
+          </div>
+          <button
+            className="small ghost"
+            onClick={() =>
+              setPlan((p) => ({
+                ...p,
+                meisterAllocation: { partner: 100, vendor: 0, employment: 0 },
+              }))
+            }
+          >
+            既定（運送店100%）
+          </button>
         </div>
       </div>
 
@@ -628,8 +696,6 @@ export default function SettingsPanel() {
       <WorkingDaysCard />
 
       <BudgetCard />
-
-      <MeisterCard />
 
       <div className="card">
         <h3>データのインポート／エクスポート</h3>

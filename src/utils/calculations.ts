@@ -231,6 +231,19 @@ export function computeMonthly(plan: Plan): MonthlyRow[] {
     totalRevenue += piCum.revenue
     totalCost += piCum.cost
 
+    // (6.5) 部分 原価改定 / 単価改定（指定カテゴリの N件に対する加算）
+    const costRev = costRevisionImpactAt(plan, ym)
+    totalCost += costRev
+    const priceRev = priceRevisionImpactAt(plan, ym)
+    totalRevenue += priceRev.revenue
+    totalCost += priceRev.costAdd
+
+    // (7) コホートdelta（獲得分が継続単価と違う場合の差分）
+    //  継続単価 × 件数 で計算されている base に対して、獲得分だけ単価・粗利が異なる分を +/- 調整
+    const cohortD = cohortDeltaAt(plan, ym)
+    totalRevenue += cohortD.deltaRevenue
+    totalCost += cohortD.deltaCost
+
     const totalProfit = totalRevenue - totalCost
     const margin = totalRevenue > 0 ? totalProfit / totalRevenue : 0
 
@@ -285,6 +298,100 @@ export function cumulativePriceIncreaseAt(
     }
   }
   return { revenue, cost, profit: revenue - cost }
+}
+
+/* ====================================================
+   コホート別 単価・粗利（FY2026）
+   ==================================================== */
+
+/** FY2026 獲得単価（前年 baseline + abs + %） */
+export function effectiveAcquisitionUnitPrice(plan: Plan): number {
+  const c = plan.cohortPricing
+  if (!c) return plan.revenuePerCase
+  const base = c.priorAcquisitionUnitPrice ?? 0
+  const abs = c.acquisitionUnitPriceUpAbs ?? 0
+  const pct = c.acquisitionUnitPriceUpPct ?? 0
+  return base + abs + (base * pct) / 100
+}
+
+/** セグメント別 獲得1案件1日あたり粗利
+ *  分解:
+ *    prior     = 前年獲得単価 × (1 - 当年原価率)         （前年水準の粗利/日）
+ *    priceGain = (当年獲得単価 - 前年獲得単価) × (1 - 原価率) （単価UPによる自動粗利増）
+ *    uplift    = 手動指定の追加粗利/日                    （単価UP以外の粗利改善）
+ *    current   = prior + priceGain + uplift              （新規獲得の実効粗利/日）
+ */
+export function effectiveAcquisitionProfitPerCaseDay(
+  plan: Plan,
+  cat: WorkerCategory,
+): { prior: number; priceGain: number; uplift: number; current: number } {
+  const base = plan.revenuePerCase ?? 0
+  const priorUnit = plan.cohortPricing?.priorAcquisitionUnitPrice ?? base
+  const acqUnit = effectiveAcquisitionUnitPrice(plan)
+  const rate = plan.categories[cat]?.costRate ?? 0
+  const prior = priorUnit * (1 - rate / 100)
+  const priceGain = (acqUnit - priorUnit) * (1 - rate / 100)
+  const uplift = plan.cohortPricing?.acquisitionProfitUplift?.[cat] ?? 0
+  return { prior, priceGain, uplift, current: prior + priceGain + uplift }
+}
+
+/** 指定月時点の累計獲得件数（セグメント別・整数按分ベース） */
+export function cumulativeAcquisitionsUpTo(plan: Plan, upToMonth: string): CategoryMap<number> {
+  const months = monthsRange(plan.baseMonth, plan.horizonMonths)
+  const cum: CategoryMap<number> = { partner: 0, vendor: 0, employment: 0 }
+  for (const m of months) {
+    if (!ymLte(m, upToMonth)) break
+    const mt = plan.monthlyTotals.find((x) => x.month === m)
+    const total = Math.max(0, Math.round(mt?.acquisitionTotal ?? 0))
+    if (total <= 0) continue
+    const ratio = effectiveRatio(plan, m, 'acquisition')
+    const dist = distributeIntegers(total, ratio)
+    cum.partner += dist.partner
+    cum.vendor += dist.vendor
+    cum.employment += dist.employment
+  }
+  return cum
+}
+
+/** 指定月のコホートdelta（継続ベースとの差分）
+ *  Δ売上 = 累計獲得件数 × (獲得単価 − 継続単価) × 営業日数
+ *  Δ粗利 = Σ_p (累計獲得[p] × uplift[p]) × 営業日数
+ */
+export function cohortDeltaAt(plan: Plan, ym: string): {
+  deltaRevenue: number
+  deltaCost: number
+  deltaProfit: number
+  cumA: CategoryMap<number>
+  acqUnitPrice: number
+  basePrice: number
+  days: number
+} {
+  const basePrice = plan.revenuePerCase ?? 0
+  const acqUnitPrice = effectiveAcquisitionUnitPrice(plan)
+  const days = workingDaysOf(plan, ym)
+  const cumA = cumulativeAcquisitionsUpTo(plan, ym)
+  const priceDelta = acqUnitPrice - basePrice
+
+  const uplift = plan.cohortPricing?.acquisitionProfitUplift ?? { partner: 0, vendor: 0, employment: 0 }
+
+  // 単価差分はカテゴリごとに cost/profit を分解:
+  //   profit_contribution = priceDelta × (1 - rate[cat])  → 粗利に行く
+  //   cost_contribution   = priceDelta × rate[cat]        → 原価に行く
+  let deltaRevenue = 0
+  let deltaProfitFromPrice = 0
+  let deltaProfitFromUplift = 0
+  for (const cat of WorkerCategoryOrder) {
+    const rate = (plan.categories[cat]?.costRate ?? 0) / 100
+    const n = cumA[cat]
+    deltaRevenue += n * priceDelta * days
+    deltaProfitFromPrice += n * priceDelta * (1 - rate) * days
+    deltaProfitFromUplift += n * (uplift[cat] ?? 0) * days
+  }
+  deltaRevenue = Math.round(deltaRevenue)
+  const deltaProfit = Math.round(deltaProfitFromPrice + deltaProfitFromUplift)
+  const deltaCost = deltaRevenue - deltaProfit
+
+  return { deltaRevenue, deltaCost, deltaProfit, cumA, acqUnitPrice, basePrice, days }
 }
 
 /** 当月新規（当月に発生した単価アップ分）のみ */
@@ -446,17 +553,193 @@ export function estimateRevenuePerCaseAtMonth(
   return row.revenue / avgCount / row.workingDays
 }
 
-/** 前年の最終月の単価 */
-export function estimatePriorYearLastMonthUnitPrice(py: PriorYearPlan): {
+/** 前年最終月の実績 × マイスター・社員を考慮した合算原価率比較
+ *  effective: アプリに入れる値（マイスター補正なし / 原価計算を正しく再現）
+ *  trueRate:  マイスター非カバーの運送店+業者の実態原価率（現場感）
+ */
+export function estimateCostRatesComparisonWithMeister(py: PriorYearPlan): {
   month: string
-  unitPrice: number
   revenue: number
+  profit: number
+  cost: number
+  socialRevenue: number
+  meisterRevenue: number
+  effectiveCombinedRate: number  // マイスター考慮なし
+  trueCombinedRate: number        // マイスター考慮あり
+} | null {
+  const series = computePriorYearMonthlySeries(py)
+  for (let i = series.length - 1; i >= 0; i--) {
+    const r = series[i]
+    if (r.revenue <= 0) continue
+    const totalEnd = r.endCounts.partner + r.endCounts.vendor + r.endCounts.employment
+    if (totalEnd <= 0) continue
+
+    const socialShare = r.endCounts.employment / totalEnd
+    const socialRevenue = socialShare * r.revenue
+    const meisterRevenue = py.monthlyData.find((d) => d.month === r.month)?.meisterRevenue ?? 0
+    const cost = r.revenue - r.grossProfit
+
+    // Effective (マイスター考慮なし): 社員のみ0%扱い
+    const rvRevEffective = r.revenue - socialRevenue
+    const rvCostEffective = cost  // 社員 cost 0 前提
+    const effectiveCombinedRate = rvRevEffective > 0 ? (rvCostEffective / rvRevEffective) * 100 : 0
+
+    // True (マイスター考慮あり): 社員 + マイスター両方 0%扱い
+    const zeroCostRev = socialRevenue + meisterRevenue
+    const rvRevTrue = r.revenue - zeroCostRev
+    const rvCostTrue = cost  // 社員+マイスター の cost はそれぞれ 0
+    const trueCombinedRate = rvRevTrue > 0 ? (rvCostTrue / rvRevTrue) * 100 : 0
+
+    return {
+      month: r.month,
+      revenue: r.revenue,
+      profit: r.grossProfit,
+      cost,
+      socialRevenue,
+      meisterRevenue,
+      effectiveCombinedRate: Math.round(effectiveCombinedRate * 100) / 100,
+      trueCombinedRate: Math.round(trueCombinedRate * 100) / 100,
+    }
+  }
+  return null
+}
+
+/** 前年最終月の実績から、セグメント別原価率を推定（R=V 仮定）
+ *  社員(employment)原価率 = 0%
+ *  運送店・業者 の合算原価率を逆算（2分の1ずつ等しいと仮定）
+ *  戻り値: { partner, vendor, employment, combinedRate } （% 単位）
+ */
+export function estimateSegmentCostRatesFromPriorLastMonth(
+  py: PriorYearPlan,
+): {
+  partner: number
+  vendor: number
+  employment: number
+  combinedRate: number
+  month: string
+} | null {
+  const series = computePriorYearMonthlySeries(py)
+  // 最後に売上/粗利がある月を使う
+  for (let i = series.length - 1; i >= 0; i--) {
+    const r = series[i]
+    if (r.revenue <= 0) continue
+    const totalEnd = r.endCounts.partner + r.endCounts.vendor + r.endCounts.employment
+    if (totalEnd <= 0) continue
+    // 単価共通前提 → 件数シェア = 売上シェア
+    const eShare = r.endCounts.employment / totalEnd
+    const eRevenue = eShare * r.revenue
+    // 社員原価 0% → 社員粗利 = 社員売上
+    const rvRevenue = r.revenue - eRevenue
+    const rvProfit = r.grossProfit - eRevenue
+    if (rvRevenue <= 0) continue
+    const rvCost = rvRevenue - rvProfit
+    const combinedRate = (rvCost / rvRevenue) * 100
+    return {
+      partner: Math.round(combinedRate * 100) / 100,
+      vendor: Math.round(combinedRate * 100) / 100,
+      employment: 0,
+      combinedRate: Math.round(combinedRate * 100) / 100,
+      month: r.month,
+    }
+  }
+  return null
+}
+
+/** 前年最終月の合算原価率を、案件数比に応じて運送店/業者に分離
+ *  deltaPt = 業者原価率 − 運送店原価率（pt）
+ *  basis:
+ *    'effective' (既定) = マイスター考慮なし。合算率 = reportedCost / (reportedRev − socialRev)
+ *                        → この率を FY2026 運用時に使うと FY2025 reported 粗利率を再現
+ *    'true'             = マイスター考慮あり。合算率 = reportedCost / (reportedRev − socialRev − meister)
+ *                        → マイスターを外した「真の運営粗利率」を基準。FY2026 で meister=0 にすると粗利率が下がる
+ *
+ *  R=partnerCount, V=vendorCount, wR=R/(R+V), wV=V/(R+V) とすると
+ *    rR = combined − wV · Δ
+ *    rV = combined + wR · Δ
+ *  案件数加重平均は combined と一致する。
+ */
+export function estimateSegmentCostRatesWithDelta(
+  py: PriorYearPlan,
+  deltaPt: number,
+  basis: 'effective' | 'true' = 'effective',
+): {
+  partner: number
+  vendor: number
+  employment: number
+  combinedRate: number
+  partnerCount: number
+  vendorCount: number
+  partnerWeight: number
+  vendorWeight: number
+  deltaPt: number
+  basis: 'effective' | 'true'
+  month: string
+} | null {
+  const series = computePriorYearMonthlySeries(py)
+  for (let i = series.length - 1; i >= 0; i--) {
+    const r = series[i]
+    if (r.revenue <= 0) continue
+    const R = r.endCounts.partner
+    const V = r.endCounts.vendor
+    const E = r.endCounts.employment
+    const totalEnd = R + V + E
+    if (totalEnd <= 0) continue
+    const eShare = E / totalEnd
+    const eRevenue = eShare * r.revenue
+    // basis = 'true' の時は meister 売上も 0%原価扱いで分母から抜く
+    const meister = basis === 'true'
+      ? (py.monthlyData.find((d) => d.month === r.month)?.meisterRevenue ?? 0)
+      : 0
+    const rvRevenue = r.revenue - eRevenue - meister
+    const rvProfit = r.grossProfit - eRevenue - meister
+    if (rvRevenue <= 0) continue
+    const rvCost = rvRevenue - rvProfit
+    const combined = (rvCost / rvRevenue) * 100
+    const rvTotal = R + V
+    if (rvTotal <= 0) continue
+    const wR = R / rvTotal
+    const wV = V / rvTotal
+    const rR = combined - wV * deltaPt
+    const rV = combined + wR * deltaPt
+    return {
+      partner: Math.round(rR * 100) / 100,
+      vendor: Math.round(rV * 100) / 100,
+      employment: 0,
+      combinedRate: Math.round(combined * 100) / 100,
+      partnerCount: R,
+      vendorCount: V,
+      partnerWeight: Math.round(wR * 10000) / 10000,
+      vendorWeight: Math.round(wV * 10000) / 10000,
+      deltaPt,
+      basis,
+      month: r.month,
+    }
+  }
+  return null
+}
+
+/** 前年の最終月の単価
+ *  basis:
+ *    'reported' (既定) = 会計実績 / 件数 / 日数。新モデル（マイスターは案件プール内の代走分）では
+ *                       revenue は案件プールなので reported 基準が正解。FY2026-04 日計 = FY2025-03 日計で連続。
+ *    'ops'             = マイスター分を抜いた単価。旧モデル参考用。
+ */
+export function estimatePriorYearLastMonthUnitPrice(
+  py: PriorYearPlan,
+  basis: 'reported' | 'ops' = 'reported',
+): {
+  month: string
+  unitPrice: number            // basis に応じた単価
+  reportedUnitPrice: number    // マイスター込み（参考）
+  opsUnitPrice: number         // マイスター除外（参考）
+  revenue: number              // basis に応じた revenue
+  meisterRevenue: number
   workingDays: number
   avgCount: number
   margin: number
+  basis: 'ops' | 'reported'
 } | null {
   const series = computePriorYearMonthlySeries(py)
-  // 最後にrevenueが入っている月を取得（末尾から逆順）
   for (let i = series.length - 1; i >= 0; i--) {
     const r = series[i]
     if (r.revenue > 0) {
@@ -464,13 +747,22 @@ export function estimatePriorYearLastMonthUnitPrice(py: PriorYearPlan): {
       const endTotal = r.endCounts.partner + r.endCounts.vendor + r.endCounts.employment
       const avgCount = (beginTotal + endTotal) / 2
       if (avgCount <= 0 || r.workingDays <= 0) continue
+      const meisterRevenue = py.monthlyData.find((d) => d.month === r.month)?.meisterRevenue ?? 0
+      const reportedUnitPrice = r.revenue / avgCount / r.workingDays
+      const opsRev = r.revenue - meisterRevenue
+      const opsUnitPrice = opsRev / avgCount / r.workingDays
+      const unitPrice = basis === 'ops' ? opsUnitPrice : reportedUnitPrice
       return {
         month: r.month,
-        unitPrice: r.revenue / avgCount / r.workingDays,
-        revenue: r.revenue,
+        unitPrice,
+        reportedUnitPrice,
+        opsUnitPrice,
+        revenue: basis === 'ops' ? opsRev : r.revenue,
+        meisterRevenue,
         workingDays: r.workingDays,
         avgCount,
         margin: r.margin,
+        basis,
       }
     }
   }
@@ -631,3 +923,423 @@ export const ALL_TRANSFER_PAIRS: { from: WorkerCategory; to: WorkerCategory }[] 
   }
   return arr
 })()
+
+/* ====================================================
+   月次 粗利率ブリッジ（Dashboard 可視化用）
+   営業向け：配車ミックス／同区分uplift／単価アップを pt 分解
+   ==================================================== */
+
+export interface MarginBridgeRow {
+  month: string
+  fy: 'prior' | 'current'
+  // 月末件数とカテゴリ構成比（%）
+  countPartner: number
+  countVendor: number
+  countEmployment: number
+  totalCount: number
+  sharePartner: number   // 0-100
+  shareVendor: number
+  shareEmployment: number
+  // 獲得/終了/純入替（構成比変動ドライバー）
+  acquisition: number
+  termination: number
+  transfersNet: CategoryMap<number>  // 各カテゴリの純入替（+in, -out）
+  // 金額（円）— 事業運営（マイスター除外）
+  baseRevenue: number     // 基礎売上（counts × 単価 × 営業日数）
+  baseCost: number        // 基礎原価（uplift・単価アップ・コホートdelta を除外）
+  upliftCost: number      // 同区分入替 累積 uplift による原価
+  priceupRevenue: number  // 単価アップ 累積 売上
+  priceupCost: number     // 単価アップ 累積 原価（還元分）
+  cohortRevenueDelta: number
+  cohortCostDelta: number
+  priceRevRevenue: number // 部分単価改定による売上加算（累積）
+  costRevCost: number     // 部分原価改定による原価加算（累積）
+  totalRevenue: number            // 事業運営 売上（マイスター除外）
+  totalCost: number
+  totalProfit: number             // 事業運営 粗利
+  meisterRevenue: number          // マイスター売上（0%原価）
+  revenueWithMeister: number      // 事業運営 + マイスター
+  profitWithMeister: number
+  // 粗利率と pt 分解（小数、0.78 = 78%）
+  baseMargin: number               // 基礎粗利率（ミックス × カテゴリ原価率）
+  initialMarginRef: number         // 期首件数 × 当月カテゴリ原価率 で計算した基準粗利率
+  acqtermPt: number                // 獲得/終了 累積による mix 変動の pt 寄与
+  transferPt: number               // 入替（非対角）による mix 変動の pt 寄与
+  priceupPt: number                // 単価アップ（+コホート）による pt 寄与（fraction, 0.01 = +1pt）
+  revisionPt: number               // 部分改定（単価+ / 原価+）による pt 寄与（売上正・原価負）
+  upliftPt: number                 // 同区分uplift による pt 寄与（通常 <= 0）
+  effectiveMargin: number          // 事業運営 実効粗利率（マイスター除外）= base + priceupPt + upliftPt
+  meisterPt: number                // マイスターを加えた時の pt 寄与（通常 >= 0）
+  marginWithMeister: number        // マイスター込み 実効粗利率 = effectiveMargin + meisterPt
+  // 営業日数と日計
+  workingDays: number
+  daily: number  // totalRevenue / workingDays
+}
+
+/** 部分 原価改定 の月次影響額（円）= 全 CostRevision の effectiveMonth <= ym の合計 */
+export function costRevisionImpactAt(plan: Plan, ym: string): number {
+  const days = workingDaysOf(plan, ym)
+  let total = 0
+  for (const cr of plan.costRevisions ?? []) {
+    if (!ymLte(cr.effectiveMonth, ym)) continue
+    total += cr.count * cr.amountPerCaseDay * days
+  }
+  return Math.round(total)
+}
+
+/** 部分 単価改定 の月次影響額（円）= 全 PriceRevision の effectiveMonth <= ym の合計（売上のみ加算、原価は変えない＝純粗利増） */
+export function priceRevisionImpactAt(plan: Plan, ym: string): { revenue: number; costAdd: number } {
+  const days = workingDaysOf(plan, ym)
+  const base = effectiveRevenuePerCaseAt(plan, ym)
+  let rev = 0
+  for (const pr of plan.priceRevisions ?? []) {
+    if (!ymLte(pr.effectiveMonth, ym)) continue
+    const perDay = pr.amountPerCaseDay ?? (base * (pr.pctOfBase ?? 0) / 100)
+    rev += pr.count * perDay * days
+  }
+  // 原価は追随させない（単価改定は純マージン寄与とする設計）
+  return { revenue: Math.round(rev), costAdd: 0 }
+}
+
+/** マイスター代走による原価削減額を計算（代走先の cost rate ぶん、cost amount モードでは対応困難なので 0）
+ *  model: 案件プールのうちマイスターが代走した meisterRevenue 円分は 0%原価。
+ *         通常の代走先カテゴリ原価率で計算されるはずだった原価が丸々浮く。
+ */
+export function meisterCostSavingAt(plan: Plan, ym: string, meisterRevenue: number): number {
+  if (meisterRevenue <= 0) return 0
+  const alloc = plan.meisterAllocation ?? { partner: 100, vendor: 0, employment: 0 }
+  const totalAlloc = (alloc.partner ?? 0) + (alloc.vendor ?? 0) + (alloc.employment ?? 0)
+  if (totalAlloc <= 0) return 0
+  let saving = 0
+  for (const cat of WorkerCategoryOrder) {
+    const share = (alloc[cat] ?? 0) / totalAlloc
+    if (share <= 0) continue
+    const cfg = effectiveConfigAt(plan, cat, ym)
+    // rate モードのみ対応（amount モードはそもそも revenue 非線形で扱い困難）
+    const rate = cfg.costModel === 'rate' ? cfg.costRate / 100 : 0
+    saving += meisterRevenue * share * rate
+  }
+  return Math.round(saving)
+}
+
+/** 指定月の件数構成 × 当月カテゴリ原価率 で純ミックス粗利率を算出（uplift・単価UP・コホート除外） */
+function blendedMixMarginAt(
+  plan: Plan,
+  counts: CategoryMap<number>,
+  ym: string,
+): number {
+  const days = workingDaysOf(plan, ym)
+  const revPerCase = effectiveRevenuePerCaseAt(plan, ym)
+  let rev = 0
+  let cost = 0
+  for (const cat of WorkerCategoryOrder) {
+    const cfg = effectiveConfigAt(plan, cat, ym)
+    const c = Math.max(0, counts[cat])
+    const r = c * revPerCase * days
+    const co =
+      cfg.costModel === 'rate'
+        ? (r * cfg.costRate) / 100
+        : c * cfg.costAmount * days
+    rev += r
+    cost += co
+  }
+  return rev > 0 ? (rev - cost) / rev : 0
+}
+
+/** FY2026 の月次粗利率ブリッジを返す（12ヶ月） */
+export function computeMarginBridge(plan: Plan): MarginBridgeRow[] {
+  const months = monthsRange(plan.baseMonth, plan.horizonMonths)
+  const result: MarginBridgeRow[] = []
+
+  let prevCounts: CategoryMap<number> = { ...plan.initialCounts }
+  // 獲得/終了のみ反映（入替なし）の並行カウント
+  let prevAcqTermCounts: CategoryMap<number> = { ...plan.initialCounts }
+  const cumDiag: { partner: number; vendor: number } = { partner: 0, vendor: 0 }
+
+  for (const ym of months) {
+    const counts: CategoryMap<number> = { ...prevCounts }
+    const countsAcqTerm: CategoryMap<number> = { ...prevAcqTermCounts }
+
+    const mt = plan.monthlyTotals.find((m) => m.month === ym)
+    const acqTotal = Math.max(0, Math.round(mt?.acquisitionTotal ?? 0))
+    const termTotal = Math.max(0, Math.round(mt?.terminationTotal ?? 0))
+    const acqR = effectiveRatio(plan, ym, 'acquisition')
+    const termR = effectiveRatio(plan, ym, 'termination')
+    const acqDist = distributeIntegers(acqTotal, acqR)
+    const termDist = distributeIntegers(termTotal, termR)
+    for (const c of WorkerCategoryOrder) {
+      counts[c] += acqDist[c]
+      counts[c] -= termDist[c]
+      countsAcqTerm[c] += acqDist[c]
+      countsAcqTerm[c] -= termDist[c]
+    }
+
+    const transfersNet: CategoryMap<number> = { partner: 0, vendor: 0, employment: 0 }
+    for (const t of plan.transfers) {
+      if (t.month !== ym) continue
+      if (t.from !== t.to) {
+        counts[t.from] -= t.count
+        counts[t.to] += t.count
+        transfersNet[t.from] -= t.count
+        transfersNet[t.to] += t.count
+      }
+    }
+    cumDiag.partner += diagonalCount(plan.transfers, ym, 'partner')
+    cumDiag.vendor += diagonalCount(plan.transfers, ym, 'vendor')
+
+    for (const c of WorkerCategoryOrder) {
+      counts[c] = Math.max(0, Math.round(counts[c]))
+      countsAcqTerm[c] = Math.max(0, Math.round(countsAcqTerm[c]))
+    }
+
+    const days = workingDaysOf(plan, ym)
+    const revPerCase = effectiveRevenuePerCaseAt(plan, ym)
+    const upliftP = effectiveDiagonalUpliftAt(plan, ym, 'partner')
+    const upliftV = effectiveDiagonalUpliftAt(plan, ym, 'vendor')
+    const diagCostP = Math.round(cumDiag.partner * upliftP * days)
+    const diagCostV = Math.round(cumDiag.vendor * upliftV * days)
+    const upliftCost = diagCostP + diagCostV
+
+    // 基礎（uplift 除外）
+    let baseRevenue = 0
+    let baseCost = 0
+    for (const cat of WorkerCategoryOrder) {
+      const cfg = effectiveConfigAt(plan, cat, ym)
+      const count = counts[cat]
+      const rev = Math.round(count * revPerCase * days)
+      const cost =
+        cfg.costModel === 'rate'
+          ? Math.round((rev * cfg.costRate) / 100)
+          : Math.round(count * cfg.costAmount * days)
+      baseRevenue += rev
+      baseCost += cost
+    }
+
+    // 単価アップ（累積）
+    const pi = cumulativePriceIncreaseAt(plan, ym)
+    // コホート delta
+    const coh = cohortDeltaAt(plan, ym)
+    // 部分改定
+    const costRev = costRevisionImpactAt(plan, ym)
+    const priceRev = priceRevisionImpactAt(plan, ym)
+
+    const totalRevenue = baseRevenue + pi.revenue + coh.deltaRevenue + priceRev.revenue
+    const totalCost = baseCost + upliftCost + pi.cost + coh.deltaCost + costRev + priceRev.costAdd
+    const totalProfit = totalRevenue - totalCost
+
+    const baseMargin = baseRevenue > 0 ? (baseRevenue - baseCost) / baseRevenue : 0
+    // ── シナリオ分解：ベース粗利率を「期首 + 獲得終了 + 入替」に分解
+    //    すべて「当月カテゴリ原価率・当月単価・当月日数」で計算するので、
+    //    差分は純粋に件数ミックスの違いに由来する
+    const initialMarginRef = blendedMixMarginAt(plan, plan.initialCounts, ym)
+    const acqtermOnlyMargin = blendedMixMarginAt(plan, countsAcqTerm, ym)
+    const acqtermPt = acqtermOnlyMargin - initialMarginRef
+    const transferPt = baseMargin - acqtermOnlyMargin
+
+    // ── 逐次加算で pt を分解（base → +priceup → +revision → −uplift）
+    const revAfterPriceup = baseRevenue + pi.revenue + coh.deltaRevenue
+    const costAfterPriceup = baseCost + pi.cost + coh.deltaCost
+    const marginAfterPriceup = revAfterPriceup > 0
+      ? (revAfterPriceup - costAfterPriceup) / revAfterPriceup : baseMargin
+    const priceupPt = marginAfterPriceup - baseMargin
+
+    const revAfterRev = revAfterPriceup + priceRev.revenue
+    const costAfterRev = costAfterPriceup + costRev + priceRev.costAdd
+    const marginAfterRev = revAfterRev > 0
+      ? (revAfterRev - costAfterRev) / revAfterRev : marginAfterPriceup
+    const revisionPt = marginAfterRev - marginAfterPriceup
+
+    const upliftPtExact = totalRevenue > 0 ? -upliftCost / totalRevenue : 0
+    const effectiveMargin = totalRevenue > 0 ? totalProfit / totalRevenue : 0
+
+    // マイスター = 案件プール内の代走分 (0%原価)。売上は不変、代走先の原価率ぶん原価が減る。
+    const meisterRevenue = plan.meisterRevenueByMonth?.[ym] ?? 0
+    const meisterCostSaving = meisterCostSavingAt(plan, ym, meisterRevenue)
+    // revenueWithMeister = 案件プール（=totalRevenue、加算なし）
+    const revenueWithMeister = totalRevenue
+    const profitWithMeister = totalProfit + meisterCostSaving
+    const marginWithMeister =
+      revenueWithMeister > 0 ? profitWithMeister / revenueWithMeister : effectiveMargin
+    const meisterPt = marginWithMeister - effectiveMargin
+
+    const total = counts.partner + counts.vendor + counts.employment
+
+    result.push({
+      month: ym,
+      fy: 'current',
+      countPartner: counts.partner,
+      countVendor: counts.vendor,
+      countEmployment: counts.employment,
+      totalCount: total,
+      sharePartner: total > 0 ? (counts.partner / total) * 100 : 0,
+      shareVendor: total > 0 ? (counts.vendor / total) * 100 : 0,
+      shareEmployment: total > 0 ? (counts.employment / total) * 100 : 0,
+      acquisition: acqTotal,
+      termination: termTotal,
+      transfersNet,
+      baseRevenue,
+      baseCost,
+      upliftCost,
+      priceupRevenue: pi.revenue,
+      priceupCost: pi.cost,
+      cohortRevenueDelta: coh.deltaRevenue,
+      cohortCostDelta: coh.deltaCost,
+      priceRevRevenue: priceRev.revenue,
+      costRevCost: costRev + priceRev.costAdd,
+      totalRevenue,
+      totalCost,
+      totalProfit,
+      meisterRevenue,
+      revenueWithMeister,
+      profitWithMeister,
+      baseMargin,
+      initialMarginRef,
+      acqtermPt,
+      transferPt,
+      priceupPt,
+      revisionPt,
+      upliftPt: upliftPtExact,
+      effectiveMargin,
+      meisterPt,
+      marginWithMeister,
+      workingDays: days,
+      daily: days > 0 ? totalRevenue / days : 0,
+    })
+
+    prevCounts = counts
+    prevAcqTermCounts = countsAcqTerm
+  }
+
+  return result
+}
+
+/** 前年実績の月次粗利率ブリッジ（実績の revenue/profit と前年の uplift 設定から逆算）
+ *  plan が与えられている場合、ミックス分解（期首 / 獲得終了 / 入替）を plan の原価率基準で計算。
+ *  FY2025 の displayed baseMargin は actual-derived のままで、分解は「plan 原価率での参考値」。
+ */
+export function computePriorYearMarginBridge(
+  py: PriorYearPlan,
+  plan?: Plan,
+): MarginBridgeRow[] {
+  const months = monthsRange(py.baseMonth, py.horizonMonths)
+  const series = computePriorYearMonthlySeries(py)
+  const result: MarginBridgeRow[] = []
+
+  const cumDiag: { partner: number; vendor: number } = { partner: 0, vendor: 0 }
+  // 獲得/終了のみ反映（入替なし）のカウント
+  let prevAcqTermCounts: CategoryMap<number> = { ...py.initialCounts }
+
+  for (let i = 0; i < months.length; i++) {
+    const ym = months[i]
+    const row = series[i]
+    const days = row.workingDays
+    const reportedRev = row.revenue           // 会計実績 (案件プール、マイスター代走分も含む)
+    const reportedProfit = row.grossProfit    // 会計実績 (マイスター代走による原価減も織り込み済み)
+    const meisterRevenue = py.monthlyData.find((d) => d.month === ym)?.meisterRevenue ?? 0
+
+    // 新モデル: マイスターは代走分なので売上は reported 不変。
+    // 原価削減は plan の allocation × 原価率（plan が無ければ 0）で推定
+    const meisterCostSaving = plan ? meisterCostSavingAt(plan, ym, meisterRevenue) : 0
+    const opsRev = reportedRev                            // 売上は変わらない
+    const opsProfit = Math.max(0, reportedProfit - meisterCostSaving) // マイスターを除いた粗利
+    const opsCost = opsRev - opsProfit
+
+    // 同区分 uplift
+    cumDiag.partner += diagonalCount(py.transfers, ym, 'partner')
+    cumDiag.vendor += diagonalCount(py.transfers, ym, 'vendor')
+    const ovr = py.diagonalUpliftByMonth?.find((r) => r.month === ym)
+    const upliftP = ovr?.partner ?? py.diagonalUplift?.partner ?? 0
+    const upliftV = ovr?.vendor ?? py.diagonalUplift?.vendor ?? 0
+    const diagCostP = Math.round(cumDiag.partner * upliftP * days)
+    const diagCostV = Math.round(cumDiag.vendor * upliftV * days)
+    const upliftCost = diagCostP + diagCostV
+
+    // 前年には priceIncreases / cohortDelta は無いので 0
+    // base = uplift 除外の事業運営粗利率
+    const effectiveMargin = opsRev > 0 ? opsProfit / opsRev : 0
+    const baseMargin = opsRev > 0 ? (opsProfit + upliftCost) / opsRev : 0
+    const upliftPtExact = opsRev > 0 ? -upliftCost / opsRev : 0
+    const priceupPt = 0
+
+    const marginWithMeister = reportedRev > 0 ? reportedProfit / reportedRev : effectiveMargin
+    const meisterPt = marginWithMeister - effectiveMargin
+
+    // acqterm 累積（入替除く）の並行カウント
+    const countsAcqTerm: CategoryMap<number> = { ...prevAcqTermCounts }
+    const acqBy = row.acquisitionByCategory
+    const termBy = row.terminationByCategory
+    countsAcqTerm.partner += acqBy.partner - termBy.partner
+    countsAcqTerm.vendor += acqBy.vendor - termBy.vendor
+    countsAcqTerm.employment += acqBy.employment - termBy.employment
+    for (const c of WorkerCategoryOrder) countsAcqTerm[c] = Math.max(0, Math.round(countsAcqTerm[c]))
+
+    // ミックス分解（plan がある場合のみ pt 寄与を計算）
+    let initialMarginRef = 0
+    let acqtermPt = 0
+    let transferPt = 0
+    if (plan) {
+      initialMarginRef = blendedMixMarginAt(plan, py.initialCounts, ym)
+      const acqtermOnlyMargin = blendedMixMarginAt(plan, countsAcqTerm, ym)
+      const fullMargin = blendedMixMarginAt(plan, row.endCounts, ym)
+      acqtermPt = acqtermOnlyMargin - initialMarginRef
+      transferPt = fullMargin - acqtermOnlyMargin
+    }
+
+    // transfersNet for this month
+    const transfersNet: CategoryMap<number> = { partner: 0, vendor: 0, employment: 0 }
+    for (const t of py.transfers) {
+      if (t.month === ym && t.from !== t.to) {
+        transfersNet[t.from] -= t.count
+        transfersNet[t.to] += t.count
+      }
+    }
+
+    const total = row.endCounts.partner + row.endCounts.vendor + row.endCounts.employment
+
+    result.push({
+      month: ym,
+      fy: 'prior',
+      countPartner: row.endCounts.partner,
+      countVendor: row.endCounts.vendor,
+      countEmployment: row.endCounts.employment,
+      totalCount: total,
+      sharePartner: total > 0 ? (row.endCounts.partner / total) * 100 : 0,
+      shareVendor: total > 0 ? (row.endCounts.vendor / total) * 100 : 0,
+      shareEmployment: total > 0 ? (row.endCounts.employment / total) * 100 : 0,
+      acquisition: row.acquisition,
+      termination: row.termination,
+      transfersNet,
+      baseRevenue: opsRev,            // 案件プール売上（reportedRev と同値、新モデル）
+      baseCost: opsCost - upliftCost, // uplift 前の ops 原価（マイスター効果も除外したもの）
+      upliftCost,
+      priceupRevenue: 0,
+      priceupCost: 0,
+      cohortRevenueDelta: 0,
+      cohortCostDelta: 0,
+      priceRevRevenue: 0,
+      costRevCost: 0,
+      totalRevenue: opsRev,           // 案件プール売上（マイスター代走分も含む内数）
+      totalCost: opsCost,             // マイスター代走なしを仮定した原価
+      totalProfit: opsProfit,         // マイスターなしの粗利
+      meisterRevenue,
+      revenueWithMeister: reportedRev,   // = 売上（代走は内数なので同額）
+      profitWithMeister: reportedProfit, // = 実績粗利（代走による原価減を反映済み）
+      baseMargin,
+      initialMarginRef,
+      acqtermPt,
+      transferPt,
+      priceupPt,
+      revisionPt: 0,
+      upliftPt: upliftPtExact,
+      effectiveMargin,
+      meisterPt,
+      marginWithMeister,
+      workingDays: days,
+      daily: row.daily,
+    })
+
+    prevAcqTermCounts = countsAcqTerm
+  }
+
+  return result
+}
