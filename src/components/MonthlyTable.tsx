@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { usePlanStore } from '../store'
 import { WorkerCategoryLabels, WorkerCategoryOrder } from '../types'
-import { budgetProfitOf, budgetRevenueOf, computeMonthly, percent, priorYm, yen } from '../utils/calculations'
+import { budgetProfitOf, budgetRevenueOf, computeMonthly, cumulativePriceIncreaseAt, monthlyNewPriceIncreaseAt, percent, priorYm, yen } from '../utils/calculations'
 import { formatYmShort } from '../utils/month'
 
 export default function MonthlyTable() {
@@ -69,6 +69,14 @@ export default function MonthlyTable() {
     return rows.reduce((s, r) => s + (plan.meisterRevenueByMonth?.[r.month] ?? 0), 0)
   }, [rows, plan.meisterRevenueByMonth])
   const hasMeister = totalMeister > 0
+
+  // 単価アップ：月次累積
+  const priceUpRows = useMemo(() => rows.map((r) => ({
+    month: r.month,
+    now: monthlyNewPriceIncreaseAt(plan, r.month),
+    cum: cumulativePriceIncreaseAt(plan, r.month),
+  })), [rows, plan])
+  const hasPriceUp = (plan.priceIncreases?.length ?? 0) > 0
 
   return (
     <div className="card">
@@ -214,6 +222,52 @@ export default function MonthlyTable() {
               {rows.map((r) => (<td className="mono" key={r.month}>{percent(r.margin)}</td>))}
               <td className="mono">{percent(totalRevenue ? totalProfit / totalRevenue : 0)}</td>
             </tr>
+
+            {hasPriceUp && (
+              <>
+                <tr><td colSpan={rows.length + 2} style={{ background: '#fef3c7', fontWeight: 600, color: '#92400e' }}>■ 単価アップ（累積・別計算で上記売上/粗利に加算済）</td></tr>
+                <tr>
+                  <td className="muted">当月 新規アップ</td>
+                  {priceUpRows.map((r) => (
+                    <td key={`pun-${r.month}`} className="mono muted" style={{ color: r.now.amount > 0 ? '#0f172a' : undefined }}>
+                      {r.now.amount > 0 ? `¥${yen(r.now.amount)}` : '—'}
+                    </td>
+                  ))}
+                  <td className="mono" style={{ background: '#fef3c7' }}>—</td>
+                </tr>
+                <tr>
+                  <td className="muted">当月 新規粗利UP</td>
+                  {priceUpRows.map((r) => (
+                    <td key={`pup-${r.month}`} className="mono muted" style={{ color: r.now.profit > 0 ? '#16a34a' : undefined }}>
+                      {r.now.profit > 0 ? `¥${yen(r.now.profit)}` : '—'}
+                    </td>
+                  ))}
+                  <td className="mono" style={{ background: '#fef3c7' }}>—</td>
+                </tr>
+                <tr style={{ background: '#fef3c7' }}>
+                  <td><strong>累計 売上UP</strong></td>
+                  {priceUpRows.map((r) => (
+                    <td key={`puc-${r.month}`} className="mono" style={{ fontWeight: 600, color: r.cum.revenue > 0 ? '#0ea5e9' : '#94a3b8' }}>
+                      {r.cum.revenue > 0 ? `¥${yen(r.cum.revenue)}` : '—'}
+                    </td>
+                  ))}
+                  <td className="mono" style={{ background: '#fde68a', color: '#0ea5e9', fontWeight: 700 }}>
+                    ¥{yen(priceUpRows[priceUpRows.length - 1]?.cum.revenue ?? 0)}
+                  </td>
+                </tr>
+                <tr style={{ background: '#fef3c7' }}>
+                  <td><strong>累計 粗利UP</strong></td>
+                  {priceUpRows.map((r) => (
+                    <td key={`pucp-${r.month}`} className="mono" style={{ fontWeight: 700, color: r.cum.profit > 0 ? '#16a34a' : '#94a3b8' }}>
+                      {r.cum.profit > 0 ? `¥${yen(r.cum.profit)}` : '—'}
+                    </td>
+                  ))}
+                  <td className="mono" style={{ background: '#fde68a', color: '#16a34a', fontWeight: 700 }}>
+                    ¥{yen(priceUpRows[priceUpRows.length - 1]?.cum.profit ?? 0)}
+                  </td>
+                </tr>
+              </>
+            )}
 
             {hasMeister && (
               <>

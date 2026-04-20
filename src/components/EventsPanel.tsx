@@ -6,6 +6,7 @@ import type {
   MonthlyDiagonalUpliftOverride,
   MonthlyRatioOverride,
   MonthlyTotal,
+  PriceIncrease,
   Ratios,
   WorkerCategory,
 } from '../types'
@@ -13,11 +14,13 @@ import { WorkerCategoryLabels, WorkerCategoryOrder } from '../types'
 import {
   ALL_TRANSFER_PAIRS,
   cumulativeDiagonalCount,
+  cumulativePriceIncreaseAt,
   diagonalCount,
   distributeIntegers,
   effectiveDiagonalUpliftAt,
   effectiveRatio,
   getTransferAmount,
+  monthlyNewPriceIncreaseAt,
   priorYm,
   ratioSum,
   totalInflow,
@@ -28,7 +31,7 @@ import {
 } from '../utils/calculations'
 import { formatYmShort, monthsRange } from '../utils/month'
 
-type Tab = 'flow' | 'ratio' | 'transfer' | 'condition'
+type Tab = 'flow' | 'ratio' | 'transfer' | 'priceup' | 'condition'
 
 export default function EventsPanel() {
   const [tab, setTab] = useState<Tab>('flow')
@@ -38,11 +41,13 @@ export default function EventsPanel() {
         <TabButton active={tab === 'flow'} onClick={() => setTab('flow')}>獲得 / 終了</TabButton>
         <TabButton active={tab === 'ratio'} onClick={() => setTab('ratio')}>配車比率（月別）</TabButton>
         <TabButton active={tab === 'transfer'} onClick={() => setTab('transfer')}>入替</TabButton>
+        <TabButton active={tab === 'priceup'} onClick={() => setTab('priceup')}>単価アップ</TabButton>
         <TabButton active={tab === 'condition'} onClick={() => setTab('condition')}>条件変更</TabButton>
       </div>
       {tab === 'flow' && <FlowsPanel />}
       {tab === 'ratio' && <RatioPanel />}
       {tab === 'transfer' && <TransfersList />}
+      {tab === 'priceup' && <PriceIncreasesList />}
       {tab === 'condition' && <ConditionChangesList />}
     </div>
   )
@@ -1027,6 +1032,215 @@ function TransfersList() {
                   </Fragment>
                 )
               })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </>
+  )
+}
+
+/* ====================================================
+   単価アップ（累積型・還元率付き）
+   ==================================================== */
+function PriceIncreasesList() {
+  const plan = usePlanStore((s) => s.plan)
+  const setPlan = usePlanStore((s) => s.setPlan)
+  const months = useMemo(() => monthsRange(plan.baseMonth, plan.horizonMonths), [plan.baseMonth, plan.horizonMonths])
+
+  function add() {
+    setPlan((p) => ({
+      ...p,
+      priceIncreases: [
+        ...p.priceIncreases,
+        { id: newId(), month: p.baseMonth, amount: 0, returnRate: 50 },
+      ],
+    }))
+  }
+  function update(id: string, patch: Partial<PriceIncrease>) {
+    setPlan((p) => ({
+      ...p,
+      priceIncreases: p.priceIncreases.map((c) => (c.id === id ? { ...c, ...patch } : c)),
+    }))
+  }
+  function remove(id: string) {
+    if (!confirm('このイベントを削除しますか？')) return
+    setPlan((p) => ({ ...p, priceIncreases: p.priceIncreases.filter((c) => c.id !== id) }))
+  }
+
+  // 月次累計の参照データ
+  const summary = useMemo(() => {
+    return months.map((m) => {
+      const cum = cumulativePriceIncreaseAt(plan, m)
+      const now = monthlyNewPriceIncreaseAt(plan, m)
+      return {
+        month: m,
+        newAmount: now.amount,
+        newProfit: now.profit,
+        newRate: now.weightedReturnRate,
+        cumRevenue: cum.revenue,
+        cumCost: cum.cost,
+        cumProfit: cum.profit,
+      }
+    })
+  }, [months, plan.priceIncreases])
+
+  const sorted = [...plan.priceIncreases].sort((a, b) => a.month.localeCompare(b.month))
+  const totalAmount = sorted.reduce((s, e) => s + e.amount, 0)
+  const totalCost = sorted.reduce((s, e) => s + Math.round((e.amount * e.returnRate) / 100), 0)
+  const totalProfit = totalAmount - totalCost
+
+  return (
+    <>
+      <div className="card">
+        <div className="row between" style={{ flexWrap: 'wrap', gap: 12 }}>
+          <div>
+            <h3 style={{ margin: 0 }}>単価アップ イベント</h3>
+            <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+              月ごとに「売上アップ額」と「還元率（仕入先）」を登録。適用月以降の売上・粗利に累計で加算されます（別計算）。
+            </div>
+          </div>
+          <button onClick={add}>＋ 単価アップを追加</button>
+        </div>
+
+        {plan.priceIncreases.length === 0 && (
+          <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>
+            まだイベントはありません。「追加」で月次の単価アップを登録してください。
+          </div>
+        )}
+
+        {sorted.map((ev) => {
+          const profit = ev.amount - Math.round((ev.amount * ev.returnRate) / 100)
+          return (
+            <div key={ev.id} className="card" style={{ background: '#f8fafc' }}>
+              <div className="form-grid">
+                <div>
+                  <label>適用月</label>
+                  <select value={ev.month} onChange={(e) => update(ev.id, { month: e.target.value })}>
+                    {months.map((m) => <option key={m} value={m}>{formatYmShort(m)}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label>売上アップ額（円）</label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={ev.amount}
+                    onChange={(e) => update(ev.id, { amount: Math.max(0, Math.round(Number(e.target.value) || 0)) })}
+                  />
+                </div>
+                <div>
+                  <label>還元率（%）</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={ev.returnRate}
+                    onChange={(e) => update(ev.id, { returnRate: Math.max(0, Math.min(100, Number(e.target.value) || 0)) })}
+                  />
+                </div>
+                <div>
+                  <label>参考：当月粗利アップ</label>
+                  <input
+                    readOnly
+                    value={`¥${yen(profit)}`}
+                    style={{ background: '#fff', color: profit > 0 ? '#16a34a' : '#94a3b8', fontWeight: 600 }}
+                  />
+                </div>
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <label>メモ</label>
+                  <input value={ev.memo ?? ''} onChange={(e) => update(ev.id, { memo: e.target.value })} placeholder="例: A社 4月改定" />
+                </div>
+                <div className="row" style={{ justifyContent: 'flex-end', gridColumn: '1 / -1' }}>
+                  <button className="small danger" onClick={() => remove(ev.id)}>削除</button>
+                </div>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      <div className="card" style={{ background: '#fffbeb', borderColor: '#fcd34d' }}>
+        <h3 style={{ color: '#92400e' }}>月次 累積サマリー</h3>
+        <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
+          下の「累計 売上UP」と「累計 粗利UP」が、通常の売上・粗利に加算されます（別計算レイヤー）。
+        </div>
+        <div className="scroll-x">
+          <table>
+            <thead>
+              <tr>
+                <th>項目</th>
+                {months.map((m) => <th key={m}>{formatYmShort(m)}</th>)}
+                <th style={{ background: '#e2e8f0' }}>年計 / 最終</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>当月 新規アップ（円）</td>
+                {summary.map((r) => (
+                  <td key={`na-${r.month}`} className="mono" style={{ color: r.newAmount > 0 ? '#0f172a' : '#94a3b8' }}>
+                    {r.newAmount > 0 ? `¥${yen(r.newAmount)}` : '—'}
+                  </td>
+                ))}
+                <td className="mono" style={{ background: '#f1f5f9', fontWeight: 700 }}>
+                  ¥{yen(totalAmount)}
+                </td>
+              </tr>
+              <tr>
+                <td>当月 還元率</td>
+                {summary.map((r) => (
+                  <td key={`nr-${r.month}`} className="mono muted" style={{ fontSize: 11 }}>
+                    {r.newAmount > 0 ? `${r.newRate.toFixed(1)}%` : '—'}
+                  </td>
+                ))}
+                <td className="mono muted" style={{ background: '#f1f5f9', fontSize: 11 }}>
+                  {totalAmount > 0 ? `${((totalCost / totalAmount) * 100).toFixed(1)}%` : '—'}
+                </td>
+              </tr>
+              <tr>
+                <td>当月 新規粗利UP</td>
+                {summary.map((r) => (
+                  <td key={`np-${r.month}`} className="mono" style={{ color: r.newProfit > 0 ? '#16a34a' : '#94a3b8' }}>
+                    {r.newProfit > 0 ? `¥${yen(r.newProfit)}` : '—'}
+                  </td>
+                ))}
+                <td className="mono" style={{ background: '#f1f5f9', color: '#16a34a', fontWeight: 700 }}>
+                  ¥{yen(totalProfit)}
+                </td>
+              </tr>
+              <tr style={{ background: '#fef3c7', borderTop: '2px solid #fcd34d' }}>
+                <td><strong>累計 売上UP</strong></td>
+                {summary.map((r) => (
+                  <td key={`cr-${r.month}`} className="mono" style={{ fontWeight: 600, color: r.cumRevenue > 0 ? '#0ea5e9' : '#94a3b8' }}>
+                    {r.cumRevenue > 0 ? `¥${yen(r.cumRevenue)}` : '—'}
+                  </td>
+                ))}
+                <td className="mono" style={{ background: '#fde68a', color: '#0ea5e9', fontWeight: 700 }}>
+                  ¥{yen(summary[summary.length - 1]?.cumRevenue ?? 0)}
+                </td>
+              </tr>
+              <tr>
+                <td>累計 還元額</td>
+                {summary.map((r) => (
+                  <td key={`cc-${r.month}`} className="mono muted">
+                    {r.cumCost > 0 ? `¥${yen(r.cumCost)}` : '—'}
+                  </td>
+                ))}
+                <td className="mono muted" style={{ background: '#fef3c7' }}>
+                  ¥{yen(summary[summary.length - 1]?.cumCost ?? 0)}
+                </td>
+              </tr>
+              <tr style={{ background: '#fef3c7' }}>
+                <td><strong>累計 粗利UP</strong></td>
+                {summary.map((r) => (
+                  <td key={`cp-${r.month}`} className="mono" style={{ fontWeight: 700, color: r.cumProfit > 0 ? '#16a34a' : '#94a3b8' }}>
+                    {r.cumProfit > 0 ? `¥${yen(r.cumProfit)}` : '—'}
+                  </td>
+                ))}
+                <td className="mono" style={{ background: '#fde68a', color: '#16a34a', fontWeight: 700 }}>
+                  ¥{yen(summary[summary.length - 1]?.cumProfit ?? 0)}
+                </td>
+              </tr>
             </tbody>
           </table>
         </div>

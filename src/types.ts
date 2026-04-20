@@ -42,6 +42,23 @@ export interface MonthlyTotal {
   terminationTotal: number
 }
 
+/** 単価アップ（累積型・還元率付き）
+ *  - 適用月以降、売上・粗利にそれぞれ加算
+ *  - 複数月の積み上げ（新しいイベントは累計に加わる）
+ *  - 例: 4月 1300万×還元60% と 5月 100万×還元50% の2件があれば
+ *    5月以降の月次売上は +1400万、月次粗利は +570万 (=520+50)
+ */
+export interface PriceIncrease {
+  id: string
+  /** 適用開始月 yyyy-mm */
+  month: string
+  /** 当月新規の売上アップ額（円） */
+  amount: number
+  /** 還元率 %（仕入先への還元。0-100） */
+  returnRate: number
+  memo?: string
+}
+
 /** 月別の配車比率オーバーライド（未指定月はデフォルト比率を使用） */
 export interface MonthlyRatioOverride {
   /** yyyy-mm */
@@ -130,6 +147,8 @@ export interface Plan {
   diagonalUpliftByMonth: MonthlyDiagonalUpliftOverride[]
   /** 月次マイスター売上（yyyy-mm → 円・参考KPI・計算には影響しない） */
   meisterRevenueByMonth: Record<string, number>
+  /** 単価アップ（累積型、還元率付き） */
+  priceIncreases: PriceIncrease[]
   /** 年度予算（売上・粗利） */
   budget: AnnualBudget
 

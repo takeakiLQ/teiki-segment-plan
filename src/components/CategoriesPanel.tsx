@@ -2,7 +2,12 @@ import { useMemo } from 'react'
 import { usePlanStore } from '../store'
 import type { CategoryConfig, CostModel, WorkerCategory } from '../types'
 import { WorkerCategoryLabels, WorkerCategoryOrder } from '../types'
-import { computePriorYearEndCounts, estimateAverageRevenuePerCase, yen } from '../utils/calculations'
+import {
+  computePriorYearEndCounts,
+  estimateAverageRevenuePerCase,
+  estimatePriorYearLastMonthUnitPrice,
+  yen,
+} from '../utils/calculations'
 
 export default function CategoriesPanel() {
   const plan = usePlanStore((s) => s.plan)
@@ -38,28 +43,59 @@ export default function CategoriesPanel() {
     () => (plan.priorYear ? estimateAverageRevenuePerCase(plan.priorYear) : null),
     [plan.priorYear],
   )
+  const priorLast = useMemo(
+    () => (plan.priorYear ? estimatePriorYearLastMonthUnitPrice(plan.priorYear) : null),
+    [plan.priorYear],
+  )
 
-  function applyPriorYearDefaults() {
+  function applyEndCountsOnly() {
     if (!plan.priorYear) {
-      alert('前年実績が未登録です。先に前年実績画面でデータを入力してください。')
+      alert('前年実績が未登録です。')
       return
     }
     const end = computePriorYearEndCounts(plan.priorYear)
-    const avgRev = estimateAverageRevenuePerCase(plan.priorYear)
     const msg =
-      `以下を当年計画に反映します。よろしいですか？\n\n` +
-      `■ 期首件数（前年期末から引き継ぎ）\n` +
+      `期首件数のみを前年期末から引き継ぎます:\n\n` +
       `  運送店 ${plan.initialCounts.partner.toLocaleString()} → ${end.partner.toLocaleString()}\n` +
       `  業者   ${plan.initialCounts.vendor.toLocaleString()} → ${end.vendor.toLocaleString()}\n` +
-      `  社員   ${plan.initialCounts.employment.toLocaleString()} → ${end.employment.toLocaleString()}\n` +
+      `  社員   ${plan.initialCounts.employment.toLocaleString()} → ${end.employment.toLocaleString()}`
+    if (!confirm(msg)) return
+    setPlan((p) => ({ ...p, initialCounts: end }))
+  }
+
+  function applyFromAverage() {
+    if (!plan.priorYear) return
+    const end = computePriorYearEndCounts(plan.priorYear)
+    const avgRev = estimateAverageRevenuePerCase(plan.priorYear)
+    const msg =
+      `期首件数 + 平均単価（前年12ヶ月平均）で反映します:\n\n` +
+      `  件数: 合計 ${totalInitial.toLocaleString()} → ${(end.partner + end.vendor + end.employment).toLocaleString()}\n` +
       (avgRev != null
-        ? `\n■ 1日あたり単価（前年平均）\n  ¥${plan.revenuePerCase.toLocaleString()} → ¥${Math.round(avgRev).toLocaleString()}`
+        ? `  単価: ¥${plan.revenuePerCase.toLocaleString()} → ¥${Math.round(avgRev).toLocaleString()}（平均）`
         : '')
     if (!confirm(msg)) return
     setPlan((p) => ({
       ...p,
       initialCounts: end,
       revenuePerCase: avgRev != null ? Math.round(avgRev) : p.revenuePerCase,
+    }))
+  }
+
+  function applyFromLastMonth() {
+    if (!plan.priorYear || !priorLast) {
+      alert('前年最終月のデータが見つかりません。')
+      return
+    }
+    const end = computePriorYearEndCounts(plan.priorYear)
+    const msg =
+      `期首件数 + 最終月(${priorLast.month})の単価で反映します（直近トレンドに寄せる）:\n\n` +
+      `  件数: 合計 ${totalInitial.toLocaleString()} → ${(end.partner + end.vendor + end.employment).toLocaleString()}\n` +
+      `  単価: ¥${plan.revenuePerCase.toLocaleString()} → ¥${Math.round(priorLast.unitPrice).toLocaleString()}`
+    if (!confirm(msg)) return
+    setPlan((p) => ({
+      ...p,
+      initialCounts: end,
+      revenuePerCase: Math.round(priorLast.unitPrice),
     }))
   }
 
@@ -71,10 +107,14 @@ export default function CategoriesPanel() {
             <div>
               <h3 style={{ margin: 0, color: '#5b21b6' }}>前年実績から初期値を反映</h3>
               <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-                FY2025 期末の件数 = FY2026 期首件数。平均単価も実績から逆算して提案。
+                FY2025 期末の件数をFY2026期首に引き継ぎ。単価は「平均」or「最終月」から選択。
               </div>
             </div>
-            <button onClick={applyPriorYearDefaults}>前年実績から初期値を反映</button>
+            <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}>
+              <button className="small ghost" onClick={applyEndCountsOnly}>期首件数のみ</button>
+              <button className="small ghost" onClick={applyFromAverage}>件数+平均単価</button>
+              <button className="small" onClick={applyFromLastMonth}>件数+最終月単価（推奨）</button>
+            </div>
           </div>
           {priorEnd && (
             <div className="scroll-x" style={{ marginTop: 10 }}>
@@ -113,12 +153,38 @@ export default function CategoriesPanel() {
               </table>
             </div>
           )}
-          {priorAvgRevenue != null && (
-            <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>
-              前年平均 1日単価: <strong>¥{Math.round(priorAvgRevenue).toLocaleString()}/日</strong>
-              （当年 現在: ¥{plan.revenuePerCase.toLocaleString()}/日）
-            </div>
-          )}
+          <div className="scroll-x" style={{ marginTop: 10 }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>1日あたり単価（参考）</th>
+                  <th>値</th>
+                  <th>備考</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td className="muted">当年 現在</td>
+                  <td className="mono"><strong>¥{plan.revenuePerCase.toLocaleString()}</strong></td>
+                  <td className="muted">FY2026 基準値</td>
+                </tr>
+                {priorAvgRevenue != null && (
+                  <tr>
+                    <td className="muted">前年 12ヶ月平均</td>
+                    <td className="mono">¥{Math.round(priorAvgRevenue).toLocaleString()}</td>
+                    <td className="muted">年間トータル÷(件数×日数)</td>
+                  </tr>
+                )}
+                {priorLast && (
+                  <tr style={{ background: '#ede9fe' }}>
+                    <td><strong>前年 最終月（{priorLast.month}）★推奨</strong></td>
+                    <td className="mono"><strong>¥{Math.round(priorLast.unitPrice).toLocaleString()}</strong></td>
+                    <td className="muted">FY2026開始直前の単価。直近トレンド反映</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 

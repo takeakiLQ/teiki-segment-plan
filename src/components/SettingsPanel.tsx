@@ -1,7 +1,12 @@
-import { useMemo, useRef } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { createEmptyPlan, usePlanStore } from '../store'
 import type { Plan } from '../types'
 import { formatYmShort, monthsRange } from '../utils/month'
+
+/** 円を読みやすく */
+function fmt(n: number): string {
+  return Math.round(n).toLocaleString('ja-JP')
+}
 
 /** 小数点第2位まで丸める */
 function round2(n: number): number {
@@ -327,6 +332,35 @@ function MeisterCard() {
   const setPlan = usePlanStore((s) => s.setPlan)
   const months = useMemo(() => monthsRange(plan.baseMonth, plan.horizonMonths), [plan.baseMonth, plan.horizonMonths])
 
+  const [pctInput, setPctInput] = useState(10)
+  const [avgInput, setAvgInput] = useState(18_000_000)
+
+  // 前年同月マッピング（2026-04 → 2025-04 などの-12ヶ月キー）
+  function priorYmOf(m: string) {
+    const d = new Date(`${m}-01`)
+    d.setMonth(d.getMonth() - 12)
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+  }
+
+  const priorByMonth = useMemo(() => {
+    const map: Record<string, number> = {}
+    if (plan.priorYear) {
+      for (const d of plan.priorYear.monthlyData) {
+        if (d.meisterRevenue && d.meisterRevenue > 0) map[d.month] = d.meisterRevenue
+      }
+    }
+    return map
+  }, [plan.priorYear])
+
+  const priorTotal = Object.values(priorByMonth).reduce((s, v) => s + v, 0)
+  const priorCount = Object.keys(priorByMonth).length
+  const priorAvg = priorCount > 0 ? priorTotal / priorCount : 0
+
+  const currentByMonth = plan.meisterRevenueByMonth ?? {}
+  const currentTotal = months.reduce((s, m) => s + (currentByMonth[m] ?? 0), 0)
+  const currentAvg = months.length > 0 ? currentTotal / months.length : 0
+  const yoyRatio = priorTotal > 0 ? currentTotal / priorTotal : 0
+
   function setMonth(m: string, v: number) {
     setPlan((p) => {
       const next = { ...p.meisterRevenueByMonth }
@@ -335,41 +369,44 @@ function MeisterCard() {
       return { ...p, meisterRevenueByMonth: next }
     })
   }
+
   function clearAll() {
     if (!confirm('FY2026 マイスター見込みを全てクリアしますか？')) return
     setPlan((p) => ({ ...p, meisterRevenueByMonth: {} }))
   }
-  function fillAll(v: number) {
-    if (!confirm(`全月に ¥${v.toLocaleString()} を入れますか？`)) return
+
+  /** 月平均額 × 12ヶ月 で一律 */
+  function applyAverage(amount: number) {
+    if (amount <= 0) return
+    if (!confirm(`全月を平均 ¥${fmt(amount)}/月 で設定します（年計 ¥${fmt(amount * months.length)}）。よろしいですか？`)) return
     setPlan((p) => {
       const next: Record<string, number> = {}
-      for (const m of months) next[m] = Math.max(0, Math.round(v))
+      for (const m of months) next[m] = Math.round(amount)
       return { ...p, meisterRevenueByMonth: next }
     })
   }
 
-  // 前年実績からコピー
-  function copyFromPriorYear() {
-    if (!plan.priorYear) {
-      alert('前年実績が未登録です。')
+  /** 前年の月次パターン × (1 + pct/100) */
+  function applyPercentFromPriorYear(pct: number) {
+    if (priorCount === 0) {
+      alert('前年のマイスター実績データがありません。先に前年実績を登録してください。')
       return
     }
-    if (!confirm('前年実績のマイスター売上を今年の同月（-12ヶ月対応）にコピーしますか？')) return
+    const newTotal = Math.round(priorTotal * (1 + pct / 100))
+    if (!confirm(
+      `前年月次パターン × ${pct >= 0 ? '+' : ''}${pct}% で設定します。\n` +
+      `  前年計 ¥${fmt(priorTotal)} → 当年計 ¥${fmt(newTotal)}\n` +
+      `  前年平均 ¥${fmt(priorAvg)} → 当年平均 ¥${fmt(priorAvg * (1 + pct / 100))}`
+    )) return
     setPlan((p) => {
-      if (!p.priorYear) return p
-      const next: Record<string, number> = { ...p.meisterRevenueByMonth }
+      const next: Record<string, number> = {}
       for (const m of months) {
-        const py = new Date(`${m}-01`)
-        py.setMonth(py.getMonth() - 12)
-        const pyKey = `${py.getFullYear()}-${String(py.getMonth() + 1).padStart(2, '0')}`
-        const d = p.priorYear.monthlyData.find((x) => x.month === pyKey)
-        if (d?.meisterRevenue != null && d.meisterRevenue > 0) next[m] = d.meisterRevenue
+        const prior = priorByMonth[priorYmOf(m)] ?? 0
+        next[m] = Math.round(prior * (1 + pct / 100))
       }
       return { ...p, meisterRevenueByMonth: next }
     })
   }
-
-  const total = months.reduce((s, m) => s + (plan.meisterRevenueByMonth?.[m] ?? 0), 0)
 
   return (
     <div className="card" style={{ background: '#faf5ff', borderColor: '#d8b4fe' }}>
@@ -380,16 +417,82 @@ function MeisterCard() {
             営業社員が代走する分の売上見込み（情報KPI）。計算には影響しません。
           </div>
         </div>
-        <div className="row">
-          <button className="small ghost" onClick={copyFromPriorYear}>前年実績からコピー</button>
-          <button className="small ghost" onClick={() => {
-            const v = Number(prompt('全月の値（円）', '16000000') ?? '0')
-            if (!Number.isNaN(v) && v > 0) fillAll(v)
-          }}>全月一括</button>
-          <button className="small ghost" onClick={clearAll}>クリア</button>
+      </div>
+
+      {/* KPI */}
+      <div className="kpi-grid" style={{ marginTop: 10 }}>
+        <div className="kpi" style={{ background: '#fff' }}>
+          <div className="label">前年 マイスター計</div>
+          <div className="value mono" style={{ color: '#64748b' }}>¥{fmt(priorTotal)}</div>
+          <div className="sub">月平均 ¥{fmt(priorAvg)}</div>
+        </div>
+        <div className="kpi" style={{ background: '#fff' }}>
+          <div className="label">当年 マイスター計（計画）</div>
+          <div className="value mono" style={{ color: '#7c3aed' }}>¥{fmt(currentTotal)}</div>
+          <div className="sub">月平均 ¥{fmt(currentAvg)}</div>
+        </div>
+        <div className="kpi" style={{ background: '#fff' }}>
+          <div className="label">対前年</div>
+          <div className="value mono" style={{ color: yoyRatio >= 1 ? '#16a34a' : '#dc2626' }}>
+            {priorTotal > 0 ? `${(yoyRatio * 100).toFixed(1)}%` : '—'}
+          </div>
+          <div className="sub">差 {currentTotal >= priorTotal ? '+' : ''}¥{fmt(currentTotal - priorTotal)}</div>
         </div>
       </div>
-      <div className="scroll-x" style={{ marginTop: 8 }}>
+
+      {/* クイック調整 */}
+      <div className="card" style={{ background: '#fff', marginTop: 8 }}>
+        <h3 style={{ fontSize: 13, margin: '0 0 8px' }}>クイック調整</h3>
+        <div className="form-grid">
+          <div>
+            <label>① 前年から +X% UP</label>
+            <div className="row" style={{ gap: 6 }}>
+              <input
+                type="number"
+                value={pctInput}
+                onChange={(e) => setPctInput(Number(e.target.value) || 0)}
+                style={{ width: 90 }}
+              />
+              <span className="muted" style={{ fontSize: 12 }}>%</span>
+              <button className="small" onClick={() => applyPercentFromPriorYear(pctInput)}>適用</button>
+            </div>
+            <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+              予想: ¥{fmt(priorAvg * (1 + pctInput / 100))}/月、年計 ¥{fmt(priorTotal * (1 + pctInput / 100))}
+            </div>
+          </div>
+          <div>
+            <label>② 月平均 Y円 を全月</label>
+            <div className="row" style={{ gap: 6 }}>
+              <input
+                type="number"
+                value={avgInput}
+                onChange={(e) => setAvgInput(Number(e.target.value) || 0)}
+                style={{ width: 140 }}
+              />
+              <span className="muted" style={{ fontSize: 12 }}>円/月</span>
+              <button className="small" onClick={() => applyAverage(avgInput)}>適用</button>
+            </div>
+            <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+              年計 ¥{fmt(avgInput * months.length)}
+            </div>
+          </div>
+          <div>
+            <label>プリセット</label>
+            <div className="row" style={{ gap: 4, flexWrap: 'wrap' }}>
+              <button className="small ghost" onClick={() => applyPercentFromPriorYear(0)}>前年同額</button>
+              <button className="small ghost" onClick={() => applyPercentFromPriorYear(5)}>+5%</button>
+              <button className="small ghost" onClick={() => applyPercentFromPriorYear(10)}>+10%</button>
+              <button className="small ghost" onClick={() => applyPercentFromPriorYear(15)}>+15%</button>
+              <button className="small ghost" onClick={() => applyAverage(18_000_000)}>月1800万</button>
+              <button className="small ghost" onClick={() => applyAverage(20_000_000)}>月2000万</button>
+              <button className="small danger" onClick={clearAll}>クリア</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 月次テーブル（当年・前年同月・前年比%） */}
+      <div className="scroll-x" style={{ marginTop: 12 }}>
         <table>
           <thead>
             <tr>
@@ -400,9 +503,9 @@ function MeisterCard() {
           </thead>
           <tbody>
             <tr>
-              <td style={{ color: '#7c3aed', fontWeight: 600 }}>マイスター売上</td>
+              <td style={{ color: '#7c3aed', fontWeight: 600 }}>FY2026 計画</td>
               {months.map((m) => {
-                const v = plan.meisterRevenueByMonth?.[m] ?? 0
+                const v = currentByMonth[m] ?? 0
                 return (
                   <td key={`mr-${m}`} style={{ padding: 2 }}>
                     <input
@@ -416,7 +519,41 @@ function MeisterCard() {
                 )
               })}
               <td className="mono" style={{ background: '#f1f5f9', color: '#7c3aed', fontWeight: 700 }}>
-                ¥{total.toLocaleString()}
+                ¥{fmt(currentTotal)}
+              </td>
+            </tr>
+            <tr>
+              <td className="muted">前年同月（FY2025）</td>
+              {months.map((m) => {
+                const priorV = priorByMonth[priorYmOf(m)] ?? 0
+                return (
+                  <td key={`py-${m}`} className="mono muted" style={{ fontSize: 12 }}>
+                    {priorV > 0 ? `¥${fmt(priorV)}` : '—'}
+                  </td>
+                )
+              })}
+              <td className="mono muted" style={{ background: '#f1f5f9' }}>
+                ¥{fmt(priorTotal)}
+              </td>
+            </tr>
+            <tr>
+              <td className="muted" style={{ fontSize: 11 }}>対前年</td>
+              {months.map((m) => {
+                const cur = currentByMonth[m] ?? 0
+                const priorV = priorByMonth[priorYmOf(m)] ?? 0
+                const r = priorV > 0 ? (cur / priorV) * 100 : 0
+                return (
+                  <td key={`yoy-${m}`} className="mono muted" style={{ fontSize: 11, color: r >= 100 ? '#16a34a' : r > 0 ? '#dc2626' : undefined }}>
+                    {priorV > 0 && cur > 0 ? `${r.toFixed(0)}%` : '—'}
+                  </td>
+                )
+              })}
+              <td className="mono" style={{
+                background: '#f1f5f9',
+                color: yoyRatio >= 1 ? '#16a34a' : yoyRatio > 0 ? '#dc2626' : undefined,
+                fontWeight: 700,
+              }}>
+                {priorTotal > 0 ? `${(yoyRatio * 100).toFixed(1)}%` : '—'}
               </td>
             </tr>
           </tbody>

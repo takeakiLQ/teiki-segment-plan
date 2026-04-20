@@ -226,6 +226,11 @@ export function computeMonthly(plan: Plan): MonthlyRow[] {
       totalCost += cost
     }
 
+    // (6) 単価アップの累計を全体の売上・原価に加算（別計算）
+    const piCum = cumulativePriceIncreaseAt(plan, ym)
+    totalRevenue += piCum.revenue
+    totalCost += piCum.cost
+
     const totalProfit = totalRevenue - totalCost
     const margin = totalRevenue > 0 ? totalProfit / totalRevenue : 0
 
@@ -259,6 +264,44 @@ export function percent(n: number, digits = 1): string {
 
 export function ratioSum(r: Ratios): number {
   return WorkerCategoryOrder.reduce((s, c) => s + (Number(r[c]) || 0), 0)
+}
+
+/* ====================================================
+   単価アップ（累積型・還元率付き）
+   ==================================================== */
+
+/** 当月時点の累計単価アップ（売上・原価・粗利）*/
+export function cumulativePriceIncreaseAt(
+  plan: Plan,
+  ym: string,
+): { revenue: number; cost: number; profit: number } {
+  let revenue = 0
+  let cost = 0
+  for (const ev of plan.priceIncreases ?? []) {
+    if (!ev || !ev.month) continue
+    if (ymLte(ev.month, ym)) {
+      revenue += ev.amount
+      cost += Math.round((ev.amount * ev.returnRate) / 100)
+    }
+  }
+  return { revenue, cost, profit: revenue - cost }
+}
+
+/** 当月新規（当月に発生した単価アップ分）のみ */
+export function monthlyNewPriceIncreaseAt(
+  plan: Plan,
+  ym: string,
+): { amount: number; weightedReturnRate: number; profit: number } {
+  let amount = 0
+  let costSum = 0
+  for (const ev of plan.priceIncreases ?? []) {
+    if (ev.month === ym) {
+      amount += ev.amount
+      costSum += Math.round((ev.amount * ev.returnRate) / 100)
+    }
+  }
+  const weightedReturnRate = amount > 0 ? (costSum / amount) * 100 : 0
+  return { amount, weightedReturnRate, profit: amount - costSum }
 }
 
 /* ====================================================
@@ -307,6 +350,131 @@ export function computePriorYearEndCounts(py: PriorYearPlan): CategoryMap<number
 
   for (const c of WorkerCategoryOrder) counts[c] = Math.max(0, Math.round(counts[c]))
   return counts
+}
+
+/** 前年実績の月次シリーズ（ダッシュボード可視化用） */
+export interface PriorYearMonthlySeriesRow {
+  month: string
+  beginCounts: CategoryMap<number>
+  endCounts: CategoryMap<number>
+  acquisition: number
+  termination: number
+  acquisitionByCategory: CategoryMap<number>
+  terminationByCategory: CategoryMap<number>
+  net: number
+  revenue: number
+  grossProfit: number
+  margin: number     // 0-1
+  workingDays: number
+  daily: number      // revenue / workingDays
+}
+
+export function computePriorYearMonthlySeries(py: PriorYearPlan): PriorYearMonthlySeriesRow[] {
+  const months = monthsRange(py.baseMonth, py.horizonMonths)
+  const result: PriorYearMonthlySeriesRow[] = []
+
+  let prevCounts: CategoryMap<number> = { ...py.initialCounts }
+
+  for (const m of months) {
+    const d = py.monthlyData.find((x) => x.month === m)
+    const counts: CategoryMap<number> = { ...prevCounts }
+
+    // カテゴリ別 獲得/終了 を算出
+    const acqBy: CategoryMap<number> = d?.acquisitionByCategory
+      ? { ...d.acquisitionByCategory }
+      : (d?.acquisition ? distributeIntegers(d.acquisition, py.acquisitionRatio) : { partner: 0, vendor: 0, employment: 0 })
+    const termBy: CategoryMap<number> = d?.terminationByCategory
+      ? { ...d.terminationByCategory }
+      : (d?.termination ? distributeIntegers(d.termination, py.terminationRatio) : { partner: 0, vendor: 0, employment: 0 })
+
+    counts.partner += acqBy.partner - termBy.partner
+    counts.vendor += acqBy.vendor - termBy.vendor
+    counts.employment += acqBy.employment - termBy.employment
+
+    for (const t of py.transfers) {
+      if (t.month === m && t.from !== t.to) {
+        counts[t.from] -= t.count
+        counts[t.to] += t.count
+      }
+    }
+    for (const c of WorkerCategoryOrder) counts[c] = Math.max(0, Math.round(counts[c]))
+
+    const acq = d?.acquisition ?? (acqBy.partner + acqBy.vendor + acqBy.employment)
+    const term = d?.termination ?? (termBy.partner + termBy.vendor + termBy.employment)
+    const revenue = d?.revenue ?? 0
+    const gp = d?.grossProfit ?? 0
+    const margin = revenue > 0 ? gp / revenue : 0
+    const days = py.workingDaysByMonth?.[m] ?? py.defaultWorkingDays
+    const daily = days > 0 ? revenue / days : 0
+
+    result.push({
+      month: m,
+      beginCounts: { ...prevCounts },
+      endCounts: { ...counts },
+      acquisition: acq,
+      termination: term,
+      acquisitionByCategory: acqBy,
+      terminationByCategory: termBy,
+      net: acq - term,
+      revenue,
+      grossProfit: gp,
+      margin,
+      workingDays: days,
+      daily,
+    })
+    prevCounts = counts
+  }
+
+  return result
+}
+
+/** 指定月の平均単価を前年実績から逆算（円/1件/1日）
+ *  単価 = 月次売上 / (平均件数 × 営業日数)
+ *  平均件数 = (月初件数 + 月末件数) / 2
+ */
+export function estimateRevenuePerCaseAtMonth(
+  py: PriorYearPlan,
+  ym: string,
+): number | null {
+  const series = computePriorYearMonthlySeries(py)
+  const row = series.find((r) => r.month === ym)
+  if (!row || row.revenue <= 0) return null
+  const beginTotal = row.beginCounts.partner + row.beginCounts.vendor + row.beginCounts.employment
+  const endTotal = row.endCounts.partner + row.endCounts.vendor + row.endCounts.employment
+  const avgCount = (beginTotal + endTotal) / 2
+  if (avgCount <= 0 || row.workingDays <= 0) return null
+  return row.revenue / avgCount / row.workingDays
+}
+
+/** 前年の最終月の単価 */
+export function estimatePriorYearLastMonthUnitPrice(py: PriorYearPlan): {
+  month: string
+  unitPrice: number
+  revenue: number
+  workingDays: number
+  avgCount: number
+  margin: number
+} | null {
+  const series = computePriorYearMonthlySeries(py)
+  // 最後にrevenueが入っている月を取得（末尾から逆順）
+  for (let i = series.length - 1; i >= 0; i--) {
+    const r = series[i]
+    if (r.revenue > 0) {
+      const beginTotal = r.beginCounts.partner + r.beginCounts.vendor + r.beginCounts.employment
+      const endTotal = r.endCounts.partner + r.endCounts.vendor + r.endCounts.employment
+      const avgCount = (beginTotal + endTotal) / 2
+      if (avgCount <= 0 || r.workingDays <= 0) continue
+      return {
+        month: r.month,
+        unitPrice: r.revenue / avgCount / r.workingDays,
+        revenue: r.revenue,
+        workingDays: r.workingDays,
+        avgCount,
+        margin: r.margin,
+      }
+    }
+  }
+  return null
 }
 
 /** 前年実績から逆算した平均単価（円/1件/1日） */
