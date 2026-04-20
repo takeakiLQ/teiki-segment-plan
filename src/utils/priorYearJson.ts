@@ -74,8 +74,21 @@ export function serializePriorYearJson(py: PriorYearPlan): any {
     const entry: any = {}
     if (d.acquisition) entry.acquisition = d.acquisition
     if (d.termination) entry.termination = d.termination
+    if (d.acquisitionByCategory) {
+      const a = d.acquisitionByCategory
+      if (a.partner || a.vendor || a.employment) {
+        entry.acquisitionByCategory = { partner: a.partner ?? 0, vendor: a.vendor ?? 0, employment: a.employment ?? 0 }
+      }
+    }
+    if (d.terminationByCategory) {
+      const t = d.terminationByCategory
+      if (t.partner || t.vendor || t.employment) {
+        entry.terminationByCategory = { partner: t.partner ?? 0, vendor: t.vendor ?? 0, employment: t.employment ?? 0 }
+      }
+    }
     if (d.revenue !== undefined && d.revenue !== 0) entry.revenue = d.revenue
     if (d.grossProfit !== undefined && d.grossProfit !== 0) entry.grossProfit = d.grossProfit
+    if (d.meisterRevenue !== undefined && d.meisterRevenue !== 0) entry.meisterRevenue = d.meisterRevenue
     if (d.memo) entry.memo = d.memo
     if (Object.keys(entry).length > 0) months[d.month] = entry
   }
@@ -199,8 +212,31 @@ export function parsePriorYearJson(
     const cur = monthByYm.get(month) ?? { month, acquisition: 0, termination: 0 }
     if (v.acquisition != null) cur.acquisition = Math.max(0, Math.round(numOr(v.acquisition, 0)))
     if (v.termination != null) cur.termination = Math.max(0, Math.round(numOr(v.termination, 0)))
+    // カテゴリ別の獲得
+    if (isObject(v.acquisitionByCategory)) {
+      const a = v.acquisitionByCategory
+      cur.acquisitionByCategory = {
+        partner: Math.max(0, Math.round(numOr(a.partner, cur.acquisitionByCategory?.partner ?? 0))),
+        vendor: Math.max(0, Math.round(numOr(a.vendor, cur.acquisitionByCategory?.vendor ?? 0))),
+        employment: Math.max(0, Math.round(numOr(a.employment, cur.acquisitionByCategory?.employment ?? 0))),
+      }
+      // 合計が未指定または 0 なら自動計算
+      const catSum = cur.acquisitionByCategory.partner + cur.acquisitionByCategory.vendor + cur.acquisitionByCategory.employment
+      if (v.acquisition == null && catSum > 0) cur.acquisition = catSum
+    }
+    if (isObject(v.terminationByCategory)) {
+      const t = v.terminationByCategory
+      cur.terminationByCategory = {
+        partner: Math.max(0, Math.round(numOr(t.partner, cur.terminationByCategory?.partner ?? 0))),
+        vendor: Math.max(0, Math.round(numOr(t.vendor, cur.terminationByCategory?.vendor ?? 0))),
+        employment: Math.max(0, Math.round(numOr(t.employment, cur.terminationByCategory?.employment ?? 0))),
+      }
+      const catSum = cur.terminationByCategory.partner + cur.terminationByCategory.vendor + cur.terminationByCategory.employment
+      if (v.termination == null && catSum > 0) cur.termination = catSum
+    }
     if (v.revenue != null) cur.revenue = Math.max(0, Math.round(numOr(v.revenue, 0)))
     if (v.grossProfit != null) cur.grossProfit = Math.round(numOr(v.grossProfit, 0))
+    if (v.meisterRevenue != null) cur.meisterRevenue = Math.max(0, Math.round(numOr(v.meisterRevenue, 0)))
     if (typeof v.memo === 'string' && v.memo) cur.memo = v.memo
     monthByYm.set(month, cur)
   }
@@ -216,7 +252,9 @@ export function parsePriorYearJson(
   }
   const monthlyData: PriorYearMonthly[] = [...monthByYm.values()].filter((d) => !(
     d.acquisition === 0 && d.termination === 0 &&
+    !d.acquisitionByCategory && !d.terminationByCategory &&
     (d.revenue ?? 0) === 0 && (d.grossProfit ?? 0) === 0 &&
+    (d.meisterRevenue ?? 0) === 0 &&
     !d.memo
   ))
 

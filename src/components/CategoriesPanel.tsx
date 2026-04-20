@@ -1,7 +1,8 @@
+import { useMemo } from 'react'
 import { usePlanStore } from '../store'
 import type { CategoryConfig, CostModel, WorkerCategory } from '../types'
 import { WorkerCategoryLabels, WorkerCategoryOrder } from '../types'
-import { yen } from '../utils/calculations'
+import { computePriorYearEndCounts, estimateAverageRevenuePerCase, yen } from '../utils/calculations'
 
 export default function CategoriesPanel() {
   const plan = usePlanStore((s) => s.plan)
@@ -28,8 +29,99 @@ export default function CategoriesPanel() {
   const totalInitial = WorkerCategoryOrder.reduce((s, c) => s + plan.initialCounts[c], 0)
   const days = plan.workingDaysByMonth?.[plan.baseMonth] ?? plan.defaultWorkingDays
 
+  // 前年実績からの参考値
+  const priorEnd = useMemo(
+    () => (plan.priorYear ? computePriorYearEndCounts(plan.priorYear) : null),
+    [plan.priorYear],
+  )
+  const priorAvgRevenue = useMemo(
+    () => (plan.priorYear ? estimateAverageRevenuePerCase(plan.priorYear) : null),
+    [plan.priorYear],
+  )
+
+  function applyPriorYearDefaults() {
+    if (!plan.priorYear) {
+      alert('前年実績が未登録です。先に前年実績画面でデータを入力してください。')
+      return
+    }
+    const end = computePriorYearEndCounts(plan.priorYear)
+    const avgRev = estimateAverageRevenuePerCase(plan.priorYear)
+    const msg =
+      `以下を当年計画に反映します。よろしいですか？\n\n` +
+      `■ 期首件数（前年期末から引き継ぎ）\n` +
+      `  運送店 ${plan.initialCounts.partner.toLocaleString()} → ${end.partner.toLocaleString()}\n` +
+      `  業者   ${plan.initialCounts.vendor.toLocaleString()} → ${end.vendor.toLocaleString()}\n` +
+      `  社員   ${plan.initialCounts.employment.toLocaleString()} → ${end.employment.toLocaleString()}\n` +
+      (avgRev != null
+        ? `\n■ 1日あたり単価（前年平均）\n  ¥${plan.revenuePerCase.toLocaleString()} → ¥${Math.round(avgRev).toLocaleString()}`
+        : '')
+    if (!confirm(msg)) return
+    setPlan((p) => ({
+      ...p,
+      initialCounts: end,
+      revenuePerCase: avgRev != null ? Math.round(avgRev) : p.revenuePerCase,
+    }))
+  }
+
   return (
     <div>
+      {plan.priorYear && (
+        <div className="card" style={{ background: '#ede9fe', borderColor: '#c4b5fd' }}>
+          <div className="row between" style={{ flexWrap: 'wrap', gap: 12 }}>
+            <div>
+              <h3 style={{ margin: 0, color: '#5b21b6' }}>前年実績から初期値を反映</h3>
+              <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                FY2025 期末の件数 = FY2026 期首件数。平均単価も実績から逆算して提案。
+              </div>
+            </div>
+            <button onClick={applyPriorYearDefaults}>前年実績から初期値を反映</button>
+          </div>
+          {priorEnd && (
+            <div className="scroll-x" style={{ marginTop: 10 }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>区分</th>
+                    <th>FY2025 期末（件）</th>
+                    <th>FY2026 現在の期首（件）</th>
+                    <th>差</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {WorkerCategoryOrder.map((cat) => {
+                    const endV = priorEnd[cat]
+                    const curV = plan.initialCounts[cat]
+                    const diff = curV - endV
+                    return (
+                      <tr key={`pyend-${cat}`}>
+                        <td><span className={`badge ${cat}`}>{WorkerCategoryLabels[cat]}</span></td>
+                        <td className="mono">{endV.toLocaleString()}</td>
+                        <td className="mono">{curV.toLocaleString()}</td>
+                        <td className="mono" style={{ color: diff === 0 ? '#94a3b8' : diff > 0 ? '#dc2626' : '#16a34a' }}>
+                          {diff === 0 ? '—（一致）' : diff > 0 ? `+${diff.toLocaleString()}` : diff.toLocaleString()}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                  <tr>
+                    <td><strong>合計</strong></td>
+                    <td className="mono"><strong>{(priorEnd.partner + priorEnd.vendor + priorEnd.employment).toLocaleString()}</strong></td>
+                    <td className="mono"><strong>{totalInitial.toLocaleString()}</strong></td>
+                    <td></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          )}
+          {priorAvgRevenue != null && (
+            <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>
+              前年平均 1日単価: <strong>¥{Math.round(priorAvgRevenue).toLocaleString()}/日</strong>
+              （当年 現在: ¥{plan.revenuePerCase.toLocaleString()}/日）
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="card">
         <h3>案件単価（全カテゴリ共通）</h3>
         <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>

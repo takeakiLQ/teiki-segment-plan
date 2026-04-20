@@ -34,6 +34,7 @@ export function createEmptyPlan(name = 'メイン計画'): Plan {
     defaultWorkingDays: 20,
     diagonalUplift: { partner: 0, vendor: 0 },
     diagonalUpliftByMonth: [],
+    meisterRevenueByMonth: {},
     budget: {
       revenue: 0,
       grossProfit: 0,
@@ -165,6 +166,9 @@ function migratePlan(plan: any): Plan {
     if (typeof plan.diagonalUplift.vendor !== 'number' || plan.diagonalUplift.vendor < 0) plan.diagonalUplift.vendor = 0
   }
   if (!Array.isArray(plan.diagonalUpliftByMonth)) plan.diagonalUpliftByMonth = []
+  if (!plan.meisterRevenueByMonth || typeof plan.meisterRevenueByMonth !== 'object') {
+    plan.meisterRevenueByMonth = {}
+  }
 
   if (plan.priorYear) {
     if (!plan.priorYear.workingDaysByMonth || typeof plan.priorYear.workingDaysByMonth !== 'object') plan.priorYear.workingDaysByMonth = {}

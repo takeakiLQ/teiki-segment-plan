@@ -64,6 +64,12 @@ export default function MonthlyTable() {
     || Object.keys(plan.budget?.revenueByMonth ?? {}).length > 0
     || Object.keys(plan.budget?.grossProfitByMonth ?? {}).length > 0
 
+  // マイスター売上（月次 + 合計）
+  const totalMeister = useMemo(() => {
+    return rows.reduce((s, r) => s + (plan.meisterRevenueByMonth?.[r.month] ?? 0), 0)
+  }, [rows, plan.meisterRevenueByMonth])
+  const hasMeister = totalMeister > 0
+
   return (
     <div className="card">
       <div className="row between">
@@ -204,10 +210,60 @@ export default function MonthlyTable() {
               <td className="mono"><strong>{yen(totalProfit)}</strong></td>
             </tr>
             <tr>
-              <td>粗利率</td>
+              <td>粗利率（マイスター含む）</td>
               {rows.map((r) => (<td className="mono" key={r.month}>{percent(r.margin)}</td>))}
               <td className="mono">{percent(totalRevenue ? totalProfit / totalRevenue : 0)}</td>
             </tr>
+
+            {hasMeister && (
+              <>
+                <tr><td colSpan={rows.length + 2} style={{ background: '#f5f3ff', fontWeight: 600, color: '#6b21a8' }}>■ マイスター影響 参照</td></tr>
+                <tr>
+                  <td className="muted">マイスター売上</td>
+                  {rows.map((r) => {
+                    const mr = plan.meisterRevenueByMonth?.[r.month] ?? 0
+                    return (
+                      <td key={`mr-${r.month}`} className="mono muted" style={{ color: mr > 0 ? '#7c3aed' : undefined }}>
+                        {mr > 0 ? `¥${yen(mr)}` : '—'}
+                      </td>
+                    )
+                  })}
+                  <td className="mono" style={{ background: '#f5f3ff', color: '#7c3aed', fontWeight: 700 }}>
+                    ¥{yen(totalMeister)}
+                  </td>
+                </tr>
+                <tr>
+                  <td className="muted">粗利率（マイスター除く）</td>
+                  {rows.map((r) => {
+                    const mr = plan.meisterRevenueByMonth?.[r.month] ?? 0
+                    const ex = r.totalRevenue > 0 ? (r.totalProfit - mr) / r.totalRevenue : 0
+                    return (
+                      <td key={`gmx-${r.month}`} className="mono muted">
+                        {r.totalRevenue > 0 ? `${(ex * 100).toFixed(1)}%` : '—'}
+                      </td>
+                    )
+                  })}
+                  <td className="mono muted" style={{ background: '#f5f3ff' }}>
+                    {totalRevenue > 0 ? `${(((totalProfit - totalMeister) / totalRevenue) * 100).toFixed(1)}%` : '—'}
+                  </td>
+                </tr>
+                <tr>
+                  <td className="muted" style={{ fontSize: 11 }}>マイスター比率（対売上）</td>
+                  {rows.map((r) => {
+                    const mr = plan.meisterRevenueByMonth?.[r.month] ?? 0
+                    const ratio = r.totalRevenue > 0 ? mr / r.totalRevenue : 0
+                    return (
+                      <td key={`mrr-${r.month}`} className="mono muted" style={{ fontSize: 11 }}>
+                        {mr > 0 && r.totalRevenue > 0 ? `${(ratio * 100).toFixed(2)}%` : '—'}
+                      </td>
+                    )
+                  })}
+                  <td className="mono muted" style={{ background: '#f5f3ff', fontSize: 11 }}>
+                    {totalMeister > 0 && totalRevenue > 0 ? `${((totalMeister / totalRevenue) * 100).toFixed(2)}%` : '—'}
+                  </td>
+                </tr>
+              </>
+            )}
 
             {hasBudget && (
               <>

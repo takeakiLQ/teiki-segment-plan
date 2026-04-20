@@ -321,6 +321,111 @@ function BudgetCard() {
   )
 }
 
+/** FY2026 マイスター見込みカード */
+function MeisterCard() {
+  const plan = usePlanStore((s) => s.plan)
+  const setPlan = usePlanStore((s) => s.setPlan)
+  const months = useMemo(() => monthsRange(plan.baseMonth, plan.horizonMonths), [plan.baseMonth, plan.horizonMonths])
+
+  function setMonth(m: string, v: number) {
+    setPlan((p) => {
+      const next = { ...p.meisterRevenueByMonth }
+      if (v > 0) next[m] = Math.round(v)
+      else delete next[m]
+      return { ...p, meisterRevenueByMonth: next }
+    })
+  }
+  function clearAll() {
+    if (!confirm('FY2026 マイスター見込みを全てクリアしますか？')) return
+    setPlan((p) => ({ ...p, meisterRevenueByMonth: {} }))
+  }
+  function fillAll(v: number) {
+    if (!confirm(`全月に ¥${v.toLocaleString()} を入れますか？`)) return
+    setPlan((p) => {
+      const next: Record<string, number> = {}
+      for (const m of months) next[m] = Math.max(0, Math.round(v))
+      return { ...p, meisterRevenueByMonth: next }
+    })
+  }
+
+  // 前年実績からコピー
+  function copyFromPriorYear() {
+    if (!plan.priorYear) {
+      alert('前年実績が未登録です。')
+      return
+    }
+    if (!confirm('前年実績のマイスター売上を今年の同月（-12ヶ月対応）にコピーしますか？')) return
+    setPlan((p) => {
+      if (!p.priorYear) return p
+      const next: Record<string, number> = { ...p.meisterRevenueByMonth }
+      for (const m of months) {
+        const py = new Date(`${m}-01`)
+        py.setMonth(py.getMonth() - 12)
+        const pyKey = `${py.getFullYear()}-${String(py.getMonth() + 1).padStart(2, '0')}`
+        const d = p.priorYear.monthlyData.find((x) => x.month === pyKey)
+        if (d?.meisterRevenue != null && d.meisterRevenue > 0) next[m] = d.meisterRevenue
+      }
+      return { ...p, meisterRevenueByMonth: next }
+    })
+  }
+
+  const total = months.reduce((s, m) => s + (plan.meisterRevenueByMonth?.[m] ?? 0), 0)
+
+  return (
+    <div className="card" style={{ background: '#faf5ff', borderColor: '#d8b4fe' }}>
+      <div className="row between" style={{ flexWrap: 'wrap', gap: 12 }}>
+        <div>
+          <h3 style={{ color: '#6b21a8', margin: 0 }}>FY2026 マイスター見込み</h3>
+          <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+            営業社員が代走する分の売上見込み（情報KPI）。計算には影響しません。
+          </div>
+        </div>
+        <div className="row">
+          <button className="small ghost" onClick={copyFromPriorYear}>前年実績からコピー</button>
+          <button className="small ghost" onClick={() => {
+            const v = Number(prompt('全月の値（円）', '16000000') ?? '0')
+            if (!Number.isNaN(v) && v > 0) fillAll(v)
+          }}>全月一括</button>
+          <button className="small ghost" onClick={clearAll}>クリア</button>
+        </div>
+      </div>
+      <div className="scroll-x" style={{ marginTop: 8 }}>
+        <table>
+          <thead>
+            <tr>
+              <th>項目</th>
+              {months.map((m) => <th key={m}>{formatYmShort(m)}</th>)}
+              <th style={{ background: '#e2e8f0' }}>年間合計</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td style={{ color: '#7c3aed', fontWeight: 600 }}>マイスター売上</td>
+              {months.map((m) => {
+                const v = plan.meisterRevenueByMonth?.[m] ?? 0
+                return (
+                  <td key={`mr-${m}`} style={{ padding: 2 }}>
+                    <input
+                      type="number"
+                      min={0}
+                      value={v}
+                      onChange={(e) => setMonth(m, Number(e.target.value) || 0)}
+                      style={{ width: 108, padding: '2px 6px', textAlign: 'right', color: '#7c3aed' }}
+                    />
+                  </td>
+                )
+              })}
+              <td className="mono" style={{ background: '#f1f5f9', color: '#7c3aed', fontWeight: 700 }}>
+                ¥{total.toLocaleString()}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 export default function SettingsPanel() {
   const plan = usePlanStore((s) => s.plan)
   const setPlan = usePlanStore((s) => s.setPlan)
@@ -386,6 +491,8 @@ export default function SettingsPanel() {
       <WorkingDaysCard />
 
       <BudgetCard />
+
+      <MeisterCard />
 
       <div className="card">
         <h3>データのインポート／エクスポート</h3>

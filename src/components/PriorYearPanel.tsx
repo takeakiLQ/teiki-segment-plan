@@ -106,6 +106,7 @@ function PriorYearEditor({ py, onDisable }: { py: PriorYearPlan; onDisable: () =
       const cleaned = arr.filter((x) => !(
         x.acquisition === 0 && x.termination === 0 &&
         (x.revenue ?? 0) === 0 && (x.grossProfit ?? 0) === 0 &&
+        (x.meisterRevenue ?? 0) === 0 &&
         !x.memo
       ))
       return { ...p, priorYear: { ...p.priorYear, monthlyData: cleaned } }
@@ -143,16 +144,18 @@ function PriorYearEditor({ py, onDisable }: { py: PriorYearPlan; onDisable: () =
 
   // 年間合計
   const totals = useMemo(() => {
-    let acq = 0, term = 0, rev = 0, gp = 0
+    let acq = 0, term = 0, rev = 0, gp = 0, meister = 0
     for (const d of py.monthlyData) {
       acq += d.acquisition
       term += d.termination
       rev += d.revenue ?? 0
       gp += d.grossProfit ?? 0
+      meister += d.meisterRevenue ?? 0
     }
     const margin = rev > 0 ? gp / rev : 0
-    return { acq, term, rev, gp, margin, net: acq - term }
+    return { acq, term, rev, gp, margin, net: acq - term, meister }
   }, [py.monthlyData])
+  const meisterTotal = totals.meister
 
   return (
     <>
@@ -427,6 +430,119 @@ function PriorYearEditor({ py, onDisable }: { py: PriorYearPlan; onDisable: () =
       </div>
 
       <div className="card">
+        <div className="row between">
+          <h3>前年 獲得・終了 カテゴリ別内訳</h3>
+          <div className="muted" style={{ fontSize: 12 }}>
+            月ごとに 運送店 / 業者 / 社員 の獲得・終了件数を記録します。合計は自動で同期。
+          </div>
+        </div>
+        <div className="scroll-x">
+          <table>
+            <thead>
+              <tr>
+                <th>項目 / 区分</th>
+                {months.map((m) => <th key={m}>{formatYmShort(m)}</th>)}
+                <th style={{ background: '#e2e8f0' }}>年間合計</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td colSpan={months.length + 2} style={{ background: '#ecfdf5', fontWeight: 600, color: '#065f46' }}>＋獲得 カテゴリ別</td></tr>
+              {WorkerCategoryOrder.map((cat) => {
+                const values = months.map((m) => getMonth(m)?.acquisitionByCategory?.[cat] ?? 0)
+                const total = values.reduce((s, v) => s + v, 0)
+                return (
+                  <tr key={`ac-${cat}`}>
+                    <td><span className={`badge ${cat}`}>{WorkerCategoryLabels[cat]}</span></td>
+                    {months.map((m, i) => (
+                      <td key={`ac-${cat}-${m}`} style={{ padding: 2 }}>
+                        <input
+                          type="number"
+                          min={0}
+                          value={values[i]}
+                          onChange={(e) => {
+                            const v = Math.max(0, Math.round(Number(e.target.value) || 0))
+                            const cur = getMonth(m)
+                            const nextBy = {
+                              partner: cur?.acquisitionByCategory?.partner ?? 0,
+                              vendor: cur?.acquisitionByCategory?.vendor ?? 0,
+                              employment: cur?.acquisitionByCategory?.employment ?? 0,
+                              [cat]: v,
+                            }
+                            const newTotal = nextBy.partner + nextBy.vendor + nextBy.employment
+                            updateMonth(m, { acquisitionByCategory: nextBy, acquisition: newTotal })
+                          }}
+                          style={{ width: 64, padding: '2px 6px', textAlign: 'right', color: '#16a34a' }}
+                        />
+                      </td>
+                    ))}
+                    <td className="mono" style={{ background: '#f1f5f9', color: '#16a34a', fontWeight: 700 }}>
+                      {total.toLocaleString()}
+                    </td>
+                  </tr>
+                )
+              })}
+              <tr><td colSpan={months.length + 2} style={{ background: '#fef2f2', fontWeight: 600, color: '#991b1b' }}>－終了 カテゴリ別</td></tr>
+              {WorkerCategoryOrder.map((cat) => {
+                const values = months.map((m) => getMonth(m)?.terminationByCategory?.[cat] ?? 0)
+                const total = values.reduce((s, v) => s + v, 0)
+                return (
+                  <tr key={`tc-${cat}`}>
+                    <td><span className={`badge ${cat}`}>{WorkerCategoryLabels[cat]}</span></td>
+                    {months.map((m, i) => (
+                      <td key={`tc-${cat}-${m}`} style={{ padding: 2 }}>
+                        <input
+                          type="number"
+                          min={0}
+                          value={values[i]}
+                          onChange={(e) => {
+                            const v = Math.max(0, Math.round(Number(e.target.value) || 0))
+                            const cur = getMonth(m)
+                            const nextBy = {
+                              partner: cur?.terminationByCategory?.partner ?? 0,
+                              vendor: cur?.terminationByCategory?.vendor ?? 0,
+                              employment: cur?.terminationByCategory?.employment ?? 0,
+                              [cat]: v,
+                            }
+                            const newTotal = nextBy.partner + nextBy.vendor + nextBy.employment
+                            updateMonth(m, { terminationByCategory: nextBy, termination: newTotal })
+                          }}
+                          style={{ width: 64, padding: '2px 6px', textAlign: 'right', color: '#dc2626' }}
+                        />
+                      </td>
+                    ))}
+                    <td className="mono" style={{ background: '#f1f5f9', color: '#dc2626', fontWeight: 700 }}>
+                      {total.toLocaleString()}
+                    </td>
+                  </tr>
+                )
+              })}
+              <tr><td colSpan={months.length + 2} style={{ background: '#f8fafc', fontWeight: 600 }}>純増減（カテゴリ別）</td></tr>
+              {WorkerCategoryOrder.map((cat) => {
+                const nets = months.map((m) => {
+                  const d = getMonth(m)
+                  return (d?.acquisitionByCategory?.[cat] ?? 0) - (d?.terminationByCategory?.[cat] ?? 0)
+                })
+                const total = nets.reduce((s, v) => s + v, 0)
+                return (
+                  <tr key={`nc-${cat}`} style={{ background: '#f8fafc' }}>
+                    <td><span className={`badge ${cat}`}>{WorkerCategoryLabels[cat]}</span></td>
+                    {nets.map((net, i) => (
+                      <td key={`nc-${cat}-${i}`} className="mono" style={{ fontWeight: 600, color: net > 0 ? '#16a34a' : net < 0 ? '#dc2626' : undefined }}>
+                        {net > 0 ? `+${net}` : net}
+                      </td>
+                    ))}
+                    <td className="mono" style={{ background: '#e2e8f0', fontWeight: 700, color: total > 0 ? '#16a34a' : total < 0 ? '#dc2626' : undefined }}>
+                      {total > 0 ? `+${total}` : total}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="card">
         <h3>前年 売上・粗利・粗利率（参考）</h3>
         <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
           会計システムや前年実績資料から、月次の売上・粗利（円）を入力してください。粗利率は自動計算されます。
@@ -489,6 +605,42 @@ function PriorYearEditor({ py, onDisable }: { py: PriorYearPlan; onDisable: () =
                 })}
                 <td className="mono" style={{ background: '#e2e8f0', fontWeight: 700 }}>
                   {totals.rev > 0 ? `${(totals.margin * 100).toFixed(1)}%` : '—'}
+                </td>
+              </tr>
+              <tr>
+                <td style={{ color: '#7c3aed', fontWeight: 600 }}>
+                  マイスター売上
+                  <div className="muted" style={{ fontSize: 10, fontWeight: 400 }}>（営業社員代走・情報表示のみ）</div>
+                </td>
+                {months.map((m) => {
+                  const d = getMonth(m)
+                  return (
+                    <td key={`py-mr-${m}`} style={{ padding: 2 }}>
+                      <input type="number" min={0} value={d?.meisterRevenue ?? 0}
+                        onChange={(e) => updateMonth(m, { meisterRevenue: Math.max(0, Math.round(Number(e.target.value) || 0)) })}
+                        style={{ width: 108, padding: '2px 6px', textAlign: 'right', color: '#7c3aed' }} />
+                    </td>
+                  )
+                })}
+                <td className="mono" style={{ background: '#f1f5f9', color: '#7c3aed', fontWeight: 700 }}>
+                  {meisterTotal.toLocaleString()}
+                </td>
+              </tr>
+              <tr>
+                <td className="muted" style={{ fontSize: 11 }}>マイスター比率（対売上）</td>
+                {months.map((m) => {
+                  const d = getMonth(m)
+                  const rev = d?.revenue ?? 0
+                  const mr = d?.meisterRevenue ?? 0
+                  const ratio = rev > 0 ? mr / rev : 0
+                  return (
+                    <td key={`py-mrr-${m}`} className="mono muted" style={{ fontSize: 11 }}>
+                      {rev > 0 && mr > 0 ? `${(ratio * 100).toFixed(2)}%` : '—'}
+                    </td>
+                  )
+                })}
+                <td className="mono muted" style={{ background: '#f1f5f9', fontSize: 11 }}>
+                  {totals.rev > 0 && meisterTotal > 0 ? `${((meisterTotal / totals.rev) * 100).toFixed(2)}%` : '—'}
                 </td>
               </tr>
             </tbody>

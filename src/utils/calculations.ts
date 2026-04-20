@@ -4,6 +4,7 @@ import type {
   CategoryMonthlyCell,
   MonthlyRow,
   Plan,
+  PriorYearPlan,
   Ratios,
   WorkerCategory,
 } from '../types'
@@ -258,6 +259,113 @@ export function percent(n: number, digits = 1): string {
 
 export function ratioSum(r: Ratios): number {
   return WorkerCategoryOrder.reduce((s, c) => s + (Number(r[c]) || 0), 0)
+}
+
+/* ====================================================
+   前年実績から FY2026 初期値を導出するヘルパー
+   ==================================================== */
+
+/** 前年実績の期末件数（FY2025 3月末 = FY2026 4月期首 に相当） */
+export function computePriorYearEndCounts(py: PriorYearPlan): CategoryMap<number> {
+  const months = monthsRange(py.baseMonth, py.horizonMonths)
+  const counts: CategoryMap<number> = { ...py.initialCounts }
+
+  for (const m of months) {
+    const d = py.monthlyData.find((x) => x.month === m)
+    // 獲得・終了（カテゴリ別データがあればそれを使用、なければ合計を均等按分）
+    if (d) {
+      if (d.acquisitionByCategory) {
+        counts.partner += d.acquisitionByCategory.partner
+        counts.vendor += d.acquisitionByCategory.vendor
+        counts.employment += d.acquisitionByCategory.employment
+      } else if (d.acquisition > 0) {
+        // フォールバック：ratio で按分
+        const dist = distributeIntegers(d.acquisition, py.acquisitionRatio)
+        counts.partner += dist.partner
+        counts.vendor += dist.vendor
+        counts.employment += dist.employment
+      }
+      if (d.terminationByCategory) {
+        counts.partner -= d.terminationByCategory.partner
+        counts.vendor -= d.terminationByCategory.vendor
+        counts.employment -= d.terminationByCategory.employment
+      } else if (d.termination > 0) {
+        const dist = distributeIntegers(d.termination, py.terminationRatio)
+        counts.partner -= dist.partner
+        counts.vendor -= dist.vendor
+        counts.employment -= dist.employment
+      }
+    }
+    // 入替（非対角のみ件数に影響。対角は件数に影響しないのでスキップ）
+    for (const t of py.transfers) {
+      if (t.month === m && t.from !== t.to) {
+        counts[t.from] -= t.count
+        counts[t.to] += t.count
+      }
+    }
+  }
+
+  for (const c of WorkerCategoryOrder) counts[c] = Math.max(0, Math.round(counts[c]))
+  return counts
+}
+
+/** 前年実績から逆算した平均単価（円/1件/1日） */
+export function estimateAverageRevenuePerCase(py: PriorYearPlan): number | null {
+  const months = monthsRange(py.baseMonth, py.horizonMonths)
+  let sumRev = 0
+  let sumCountDays = 0
+
+  let prevCounts: CategoryMap<number> = { ...py.initialCounts }
+
+  for (const m of months) {
+    const d = py.monthlyData.find((x) => x.month === m)
+    const counts: CategoryMap<number> = { ...prevCounts }
+
+    if (d) {
+      if (d.acquisitionByCategory) {
+        counts.partner += d.acquisitionByCategory.partner
+        counts.vendor += d.acquisitionByCategory.vendor
+        counts.employment += d.acquisitionByCategory.employment
+      } else if (d.acquisition > 0) {
+        const dist = distributeIntegers(d.acquisition, py.acquisitionRatio)
+        counts.partner += dist.partner
+        counts.vendor += dist.vendor
+        counts.employment += dist.employment
+      }
+      if (d.terminationByCategory) {
+        counts.partner -= d.terminationByCategory.partner
+        counts.vendor -= d.terminationByCategory.vendor
+        counts.employment -= d.terminationByCategory.employment
+      } else if (d.termination > 0) {
+        const dist = distributeIntegers(d.termination, py.terminationRatio)
+        counts.partner -= dist.partner
+        counts.vendor -= dist.vendor
+        counts.employment -= dist.employment
+      }
+    }
+    for (const t of py.transfers) {
+      if (t.month === m && t.from !== t.to) {
+        counts[t.from] -= t.count
+        counts[t.to] += t.count
+      }
+    }
+    for (const c of WorkerCategoryOrder) counts[c] = Math.max(0, counts[c])
+
+    const beginTotal = prevCounts.partner + prevCounts.vendor + prevCounts.employment
+    const endTotal = counts.partner + counts.vendor + counts.employment
+    const avgCount = (beginTotal + endTotal) / 2
+    const days = py.workingDaysByMonth?.[m] ?? py.defaultWorkingDays
+
+    if (d?.revenue && avgCount > 0 && days > 0) {
+      sumRev += d.revenue
+      sumCountDays += avgCount * days
+    }
+
+    prevCounts = counts
+  }
+
+  if (sumCountDays <= 0) return null
+  return sumRev / sumCountDays
 }
 
 /* ====================================================

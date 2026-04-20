@@ -128,6 +128,8 @@ export interface Plan {
   diagonalUplift: DiagonalUplift
   /** 同区分入替 原価引き上げ額の月別上書き */
   diagonalUpliftByMonth: MonthlyDiagonalUpliftOverride[]
+  /** 月次マイスター売上（yyyy-mm → 円・参考KPI・計算には影響しない） */
+  meisterRevenueByMonth: Record<string, number>
   /** 年度予算（売上・粗利） */
   budget: AnnualBudget
 
@@ -160,14 +162,22 @@ export interface AnnualBudget {
 export interface PriorYearMonthly {
   /** yyyy-mm 形式（前年の月） */
   month: string
-  /** 獲得総件数 */
+  /** 獲得総件数（合計・acquisitionByCategory が与えられている場合はその合計） */
   acquisition: number
-  /** 終了総件数 */
+  /** 終了総件数（合計） */
   termination: number
+  /** カテゴリ別 獲得件数（任意・より詳細な実績） */
+  acquisitionByCategory?: CategoryMap<number>
+  /** カテゴリ別 終了件数 */
+  terminationByCategory?: CategoryMap<number>
   /** 前年 売上（円・参考） */
   revenue?: number
   /** 前年 粗利（円・参考） */
   grossProfit?: number
+  /** マイスター売上（円・参考）
+   *  営業社員が運送店/業者/雇用枠を代走した分の売上相当額。
+   *  粗利には既にマイスター効果が織り込まれているため、**情報表示専用**。 */
+  meisterRevenue?: number
   memo?: string
 }
 
