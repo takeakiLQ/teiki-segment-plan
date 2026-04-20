@@ -19,8 +19,7 @@
   /* 稼働者区分バッジ色 */
   --partner: #2563eb;
   --vendor: #7c3aed;
-  --dposition: #db2777;
-  --fs: #059669;
+  --employment: #059669;
 }
 
 * { box-sizing: border-box; }
@@ -179,10 +178,9 @@ tr:hover td { background: var(--row-hover); }
   font-size: 11px;
   font-weight: 600;
 }
-.badge.partner  { background: rgba(37,99,235,0.12);   color: var(--partner); }
-.badge.vendor   { background: rgba(124,58,237,0.12);  color: var(--vendor); }
-.badge.dposition{ background: rgba(219,39,119,0.12);  color: var(--dposition); }
-.badge.fs       { background: rgba(5,150,105,0.12);   color: var(--fs); }
+.badge.partner    { background: rgba(37,99,235,0.12);   color: var(--partner); }
+.badge.vendor     { background: rgba(124,58,237,0.12);  color: var(--vendor); }
+.badge.employment { background: rgba(5,150,105,0.12);   color: var(--employment); }
 
 .row { display: flex; gap: 8px; align-items: center; }
 .row.between { justify-content: space-between; }

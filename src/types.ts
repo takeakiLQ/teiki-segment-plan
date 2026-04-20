@@ -1,99 +1,223 @@
-// ドメイン型定義
+// ドメイン型定義（ポートフォリオ型 / 配車比率モデル）
 
-export type WorkerCategory = 'partner' | 'vendor' | 'dposition' | 'fs'
+export type WorkerCategory = 'partner' | 'vendor' | 'employment'
 
 export const WorkerCategoryLabels: Record<WorkerCategory, string> = {
-  partner: 'パートナー',
-  vendor: '協力会社',
-  dposition: 'D職',
-  fs: 'FS',
+  partner: '運送店',
+  vendor: '業者',
+  employment: '社員',
 }
 
-/** 稼働者区分ごとのデフォルト原価率（％） */
-export interface CategoryDefaults {
+export const WorkerCategoryOrder: WorkerCategory[] = ['partner', 'vendor', 'employment']
+
+export type CostModel = 'rate' | 'amount'
+
+/** カテゴリごとの原価設定（売上単価はカテゴリ非依存で Plan レベル）
+ *  月次原価 = 件数 × 1日あたり原価 × 計算日数（costModel='amount'）
+ *  月次原価 = 月次売上 × 原価率 / 100（costModel='rate'）
+ */
+export interface CategoryConfig {
+  /** @deprecated A案への移行により Plan.revenuePerCase を使用。互換のため型は残す */
+  revenuePerCase?: number
+  /** 原価の表現方法 */
+  costModel: CostModel
+  /** 原価率（%）costModel='rate' の時に使用 */
+  costRate: number
+  /** 1案件 × 1日 あたりの原価（円）costModel='amount' の時に使用 */
+  costAmount: number
+}
+
+export type CategoryMap<T> = Record<WorkerCategory, T>
+
+/** 配車比率（合計100%になるように運用。sumが0以外であれば自動的に正規化して計算） */
+export type Ratios = CategoryMap<number>
+
+/** 月次の 獲得総数 / 終了総数（カテゴリ別は比率で按分） */
+export interface MonthlyTotal {
+  /** yyyy-mm */
+  month: string
+  /** 当月の獲得総件数 */
+  acquisitionTotal: number
+  /** 当月の終了総件数 */
+  terminationTotal: number
+}
+
+/** 月別の配車比率オーバーライド（未指定月はデフォルト比率を使用） */
+export interface MonthlyRatioOverride {
+  /** yyyy-mm */
+  month: string
+  /** 獲得比率のオーバーライド（未指定・合計0ならデフォルトを使用） */
+  acquisition?: Ratios
+  /** 終了比率のオーバーライド */
+  termination?: Ratios
+}
+
+/** 同区分入替による 1件1日あたり の仕入単価引き上げ額（円）
+ *  社員→社員は常に0のため保持しない（計算でも0として扱う）
+ */
+export interface DiagonalUplift {
   partner: number
   vendor: number
-  dposition: number
-  fs: number
 }
 
-/** 案件（定期収益の源泉） */
-export interface Project {
+/** 月別の同区分uplift上書き（未指定項目はデフォルト値を使用） */
+export interface MonthlyDiagonalUpliftOverride {
+  /** yyyy-mm */
+  month: string
+  partner?: number
+  vendor?: number
+}
+
+/** 入替（カテゴリ間移動） */
+export interface TransferEvent {
   id: string
-  name: string
-  client?: string
-  /** yyyy-mm 形式 */
-  startMonth: string
-  /** yyyy-mm 形式。終了未定の場合は null */
-  endMonth: string | null
-  /** 月次の基本単価（円） */
-  unitPrice: number
-  /** 単価改定履歴（effectiveMonth 以降に newPrice が適用） */
-  priceChanges: PriceChange[]
+  month: string
+  from: WorkerCategory
+  to: WorkerCategory
+  count: number
   memo?: string
 }
 
-export interface PriceChange {
-  id: string
-  effectiveMonth: string // yyyy-mm
-  newPrice: number
-  reason?: string
-}
+/** 条件変更の対象：
+ *  'revenue' = 全体の1日あたり単価（Planレベル）を改定
+ *  WorkerCategory = そのカテゴリの原価を改定
+ */
+export type ChangeTarget = WorkerCategory | 'revenue'
 
-/** 稼働者 */
-export interface Worker {
-  id: string
-  name: string
-  category: WorkerCategory
-  /** 月次の仕入単価（円）。個別設定が無い場合は 0 で category のデフォルト原価率を使用 */
-  monthlyCost: number
-  /** 仕入原価の改定履歴 */
-  costChanges: CostChange[]
-}
-
-export interface CostChange {
+/** 条件変更（単価 or カテゴリ原価の改定） effectiveMonth 以降に適用 */
+export interface ConditionChange {
   id: string
   effectiveMonth: string
-  newCost: number
+  /** 対象。'revenue' は全体の単価改定、カテゴリ名はそのカテゴリの原価改定 */
+  category: ChangeTarget
+  newRevenuePerCase?: number   // category='revenue' の時に使用
+  newCostModel?: CostModel     // category=<cat> の時に使用
+  newCostRate?: number
+  newCostAmount?: number
   reason?: string
 }
 
-/** 案件への稼働者アサイン（入替も表現可） */
-export interface Assignment {
-  id: string
-  projectId: string
-  workerId: string
-  startMonth: string // yyyy-mm
-  endMonth: string | null // yyyy-mm or null (継続)
-  /** アサイン時の個別原価率(%)。未設定なら worker.monthlyCost を優先し、無ければ category デフォルト */
-  overrideCostRate?: number | null
-  memo?: string
-}
-
-/** 計画（ユーザー × 計画ID） */
+/** 計画本体 */
 export interface Plan {
   id: string
   name: string
-  /** 基準月 yyyy-mm。この月から 12 ヶ月を表示 */
+  /** 基準月 yyyy-mm */
   baseMonth: string
-  horizonMonths: number // 通常 12
-  categoryDefaults: CategoryDefaults
-  projects: Project[]
-  workers: Worker[]
-  assignments: Assignment[]
+  /** 通常12ヶ月、最大36ヶ月 */
+  horizonMonths: number
+  /** 基準月期首の初期件数 */
+  initialCounts: CategoryMap<number>
+  /** 1日あたりの案件単価（全カテゴリ共通・円） */
+  revenuePerCase: number
+  /** カテゴリの原価設定（単価はPlanレベル） */
+  categories: CategoryMap<CategoryConfig>
+
+  /** 獲得配車比率（%） カテゴリ別の配分比（デフォルト） */
+  acquisitionRatio: Ratios
+  /** 終了配車比率（%） デフォルト */
+  terminationRatio: Ratios
+  /** 月別の配車比率オーバーライド */
+  monthlyRatios: MonthlyRatioOverride[]
+  /** 月次の獲得・終了合計件数 */
+  monthlyTotals: MonthlyTotal[]
+  /** 月ごとの計算日数（yyyy-mm → 日数）。未設定月はデフォルト日数を使用 */
+  workingDaysByMonth: Record<string, number>
+  /** デフォルトの計算日数（通常 20 日） */
+  defaultWorkingDays: number
+  /** 同区分入替の原価引き上げ額（デフォルト・年度一律）。1件1日あたり円 */
+  diagonalUplift: DiagonalUplift
+  /** 同区分入替 原価引き上げ額の月別上書き */
+  diagonalUpliftByMonth: MonthlyDiagonalUpliftOverride[]
+  /** 年度予算（売上・粗利） */
+  budget: AnnualBudget
+
+  /** 入替 */
+  transfers: TransferEvent[]
+  /** 条件変更 */
+  conditionChanges: ConditionChange[]
+  /** 前年実績（参考表示用。計算には影響しない） */
+  priorYear?: PriorYearPlan
   updatedAt?: string
 }
 
-/** 月次集計（計算結果） */
-export interface MonthlyRow {
-  month: string // yyyy-mm
+/** 年度予算（年間合計 + 月別上書き）
+ *  月別上書きが無い月は annual / horizonMonths で均等按分して扱います。
+ */
+export interface AnnualBudget {
+  /** 年間売上予算（円） */
   revenue: number
-  costTotal: number
-  costByCategory: Record<WorkerCategory, number>
+  /** 年間粗利予算（円） */
   grossProfit: number
-  grossMargin: number // 0-1
-  activeProjectCount: number
-  activeWorkerCount: number
-  newProjects: number
-  endingProjects: number
+  /** 月別 売上予算（yyyy-mm → 円）。未設定月は均等按分 */
+  revenueByMonth: Record<string, number>
+  /** 月別 粗利予算（yyyy-mm → 円）。未設定月は均等按分 */
+  grossProfitByMonth: Record<string, number>
+}
+
+/* ======= 前年実績（参考データ） ======= */
+
+/** 前年の月次データ */
+export interface PriorYearMonthly {
+  /** yyyy-mm 形式（前年の月） */
+  month: string
+  /** 獲得総件数 */
+  acquisition: number
+  /** 終了総件数 */
+  termination: number
+  /** 前年 売上（円・参考） */
+  revenue?: number
+  /** 前年 粗利（円・参考） */
+  grossProfit?: number
+  memo?: string
+}
+
+/** 前年実績プラン */
+export interface PriorYearPlan {
+  /** 会計年度ラベル 例 "FY2025" */
+  fiscalYear: string
+  /** 開始月 yyyy-mm */
+  baseMonth: string
+  horizonMonths: number
+  initialCounts: CategoryMap<number>
+  acquisitionRatio: Ratios
+  terminationRatio: Ratios
+  monthlyData: PriorYearMonthly[]
+  transfers: TransferEvent[]
+  /** 月ごとの計算日数（yyyy-mm → 日数） */
+  workingDaysByMonth: Record<string, number>
+  defaultWorkingDays: number
+  /** 同区分入替の原価引き上げ額（前年実績値） */
+  diagonalUplift: DiagonalUplift
+  /** 月別上書き */
+  diagonalUpliftByMonth: MonthlyDiagonalUpliftOverride[]
+}
+
+// 計算結果
+
+export interface CategoryMonthlyCell {
+  count: number
+  /** 当月に獲得された件数（按分後の整数） */
+  newCases: number
+  /** 当月に終了した件数（按分後の整数） */
+  endingCases: number
+  revenue: number
+  cost: number
+  profit: number
+  effectiveRevenuePerCase: number
+  costModel: CostModel
+  effectiveCostRate?: number
+  effectiveCostAmount?: number
+}
+
+export interface MonthlyRow {
+  month: string
+  byCategory: CategoryMap<CategoryMonthlyCell>
+  totalCount: number
+  totalRevenue: number
+  totalCost: number
+  totalProfit: number
+  margin: number
+  newTotal: number
+  endTotal: number
+  transfersTotal: number
 }

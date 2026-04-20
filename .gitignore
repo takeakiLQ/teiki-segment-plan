@@ -27,3 +27,18 @@ dist-ssr
 .env
 .env.local
 .env.*.local
+
+# ---- 業務データ（実績・予算などの機密。公開しない） ----
+# data/ 以下は一切コミットしない（READMEだけ例外で残す）
+/data/*
+!/data/README.md
+
+# 念のための安全網（ルート直下の作業ファイルが混入した場合に備える）
+/fy*.json
+/*-workingdays.json
+/plan.json
+/prior-year.json
+
+# ローカル用途の個人メモ等
+notes.local.md
+scratch/

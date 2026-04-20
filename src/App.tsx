@@ -5,20 +5,20 @@ import { usePlanStore } from './store'
 import Login from './components/Login'
 import Dashboard from './components/Dashboard'
 import MonthlyTable from './components/MonthlyTable'
-import ProjectsPanel from './components/ProjectsPanel'
-import WorkersPanel from './components/WorkersPanel'
-import AssignmentsPanel from './components/AssignmentsPanel'
+import CategoriesPanel from './components/CategoriesPanel'
+import EventsPanel from './components/EventsPanel'
+import PriorYearPanel from './components/PriorYearPanel'
 import SettingsPanel from './components/SettingsPanel'
 
-type View = 'dashboard' | 'monthly' | 'projects' | 'workers' | 'assignments' | 'settings'
+type View = 'dashboard' | 'monthly' | 'categories' | 'events' | 'priorYear' | 'settings'
 
 const NAV: { id: View; label: string; icon: string }[] = [
   { id: 'dashboard', label: 'ダッシュボード', icon: '📊' },
   { id: 'monthly', label: '月次テーブル', icon: '📅' },
-  { id: 'projects', label: '案件', icon: '📁' },
-  { id: 'workers', label: '稼働者', icon: '👥' },
-  { id: 'assignments', label: 'アサイン', icon: '🔗' },
-  { id: 'settings', label: '設定', icon: '⚙️' },
+  { id: 'categories', label: 'カテゴリ設定', icon: '🧮' },
+  { id: 'events', label: '月次イベント', icon: '🔀' },
+  { id: 'priorYear', label: '前年実績', icon: '📆' },
+  { id: 'settings', label: '計画設定', icon: '⚙️' },
 ]
 
 export default function App() {
@@ -107,9 +107,9 @@ export default function App() {
 
         {view === 'dashboard' && <Dashboard />}
         {view === 'monthly' && <MonthlyTable />}
-        {view === 'projects' && <ProjectsPanel />}
-        {view === 'workers' && <WorkersPanel />}
-        {view === 'assignments' && <AssignmentsPanel />}
+        {view === 'categories' && <CategoriesPanel />}
+        {view === 'events' && <EventsPanel />}
+        {view === 'priorYear' && <PriorYearPanel />}
         {view === 'settings' && <SettingsPanel />}
       </main>
     </div>
