@@ -1851,8 +1851,9 @@ function Kpi({ label, value, sub }: { label: string; value: string; sub?: string
   )
 }
 
-function navigateTo(view: 'dashboard' | 'monthly' | 'categories' | 'events' | 'priorYear' | 'settings') {
-  window.dispatchEvent(new CustomEvent('navigate-to-view', { detail: view }))
+type NavView = 'dashboard' | 'monthly' | 'categories' | 'events' | 'priorYear' | 'settings'
+function navigateTo(view: NavView, opts?: { subTab?: string; anchor?: string }) {
+  window.dispatchEvent(new CustomEvent('navigate-to-view', { detail: { view, ...opts } }))
 }
 
 /** Dashboard パラメータ一覧カード群：FY2026 の主要設定値を前年と並記 */
@@ -1946,6 +1947,7 @@ function ParamCardsRow({
           deltaUnit="件"
           color="#16a34a"
           to="events"
+          subTab="flow"
         />
         <LinkCard
           title="終了 (年間)"
@@ -1956,6 +1958,7 @@ function ParamCardsRow({
           deltaGoodPositive={false}
           color="#dc2626"
           to="events"
+          subTab="flow"
         />
         <LinkCard
           title="純増 (年間)"
@@ -1965,6 +1968,7 @@ function ParamCardsRow({
           deltaUnit="件"
           color="#0ea5e9"
           to="events"
+          subTab="flow"
         />
         <LinkCard
           title="獲得単価 (円/件/日)"
@@ -1976,6 +1980,7 @@ function ParamCardsRow({
           deltaUnit="円"
           color="#d97706"
           to="categories"
+          anchor="cohort-pricing-card"
         />
         <LinkCard
           title="案件単価（プール）"
@@ -1985,6 +1990,7 @@ function ParamCardsRow({
           deltaUnit="円"
           color="#0284c7"
           to="categories"
+          anchor="unit-price-card"
         />
         <LinkCard
           title="終了単価 (参考)"
@@ -2006,6 +2012,7 @@ function ParamCardsRow({
           deltaFormatM
           color="#9a3412"
           to="events"
+          subTab="meister"
         />
         <LinkCard
           title="入替 (年間・非対角)"
@@ -2015,6 +2022,7 @@ function ParamCardsRow({
           deltaUnit="件"
           color="#9333ea"
           to="events"
+          subTab="transfer"
         />
         <LinkCard
           title="改定 年間影響（20日換算）"
@@ -2026,6 +2034,7 @@ function ParamCardsRow({
             : '未設定'}
           color="#06b6d4"
           to="events"
+          subTab={priceRevYearly >= costRevYearly ? 'pricerev' : 'costrev'}
         />
         <LinkCard
           title="原価率（2026-03 snapshot）"
@@ -2033,6 +2042,7 @@ function ParamCardsRow({
           sub={`社員 ${catRate.employment.toFixed(1)}%`}
           color="#7c3aed"
           to="categories"
+          anchor="category-rate-card"
         />
       </div>
       <div className="muted" style={{ fontSize: 10, marginTop: 6 }}>
@@ -2053,6 +2063,8 @@ function LinkCard({
   deltaGoodPositive = true,
   color,
   to,
+  subTab,
+  anchor,
 }: {
   title: string
   value: string
@@ -2063,7 +2075,9 @@ function LinkCard({
   /** 増加=良い なら true (既定), 減少=良い なら false */
   deltaGoodPositive?: boolean
   color: string
-  to: 'dashboard' | 'monthly' | 'categories' | 'events' | 'priorYear' | 'settings'
+  to: NavView
+  subTab?: string
+  anchor?: string
 }) {
   const deltaIsGood = delta == null
     ? null
@@ -2089,7 +2103,7 @@ function LinkCard({
       }}
     >
       <button
-        onClick={() => navigateTo(to)}
+        onClick={() => navigateTo(to, { subTab, anchor })}
         title="設定画面にジャンプ"
         style={{
           position: 'absolute',

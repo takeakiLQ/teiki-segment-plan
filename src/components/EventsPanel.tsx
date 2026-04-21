@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { newId, usePlanStore } from '../store'
 import type {
   ConditionChange,
@@ -39,6 +39,17 @@ type Tab = 'flow' | 'ratio' | 'transfer' | 'priceup' | 'meister' | 'costrev' | '
 
 export default function EventsPanel() {
   const [tab, setTab] = useState<Tab>('flow')
+  // Dashboard のリンクカードからサブタブ切替指示を受け取る
+  useEffect(() => {
+    function onSubtab(e: Event) {
+      const detail = (e as CustomEvent).detail
+      if (typeof detail === 'string' && ['flow','ratio','transfer','priceup','meister','costrev','pricerev','condition'].includes(detail)) {
+        setTab(detail as Tab)
+      }
+    }
+    window.addEventListener('nav-subtab', onSubtab)
+    return () => window.removeEventListener('nav-subtab', onSubtab)
+  }, [])
   return (
     <div>
       <div className="row" style={{ marginBottom: 12, gap: 6, flexWrap: 'wrap' }}>

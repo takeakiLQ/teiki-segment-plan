@@ -238,7 +238,7 @@ export default function CategoriesPanel() {
         </div>
       )}
 
-      <div className="card">
+      <div className="card" id="unit-price-card">
         <h3>案件単価（全カテゴリ共通）</h3>
         <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
           請求単価は配車区分（運送店/業者/社員）に依らず同一です。入替は<strong>原価率の変動のみ</strong>をもたらし、売上は変動しません。
@@ -335,7 +335,7 @@ export default function CategoriesPanel() {
         </div>
       </div>
 
-      <div className="card">
+      <div className="card" id="category-rate-card">
         <div className="row between">
           <h3>カテゴリ別 期首件数・原価設定</h3>
           <div className="muted" style={{ fontSize: 12 }}>
@@ -553,7 +553,7 @@ function CohortPricingCard() {
   const casesNeededForProfitGap = (profitGap < 0 && perExtraCase_AnnualProfit > 0) ? Math.ceil(-profitGap / perExtraCase_AnnualProfit) : 0
 
   return (
-    <div className="card" style={{ background: '#f0fdf4', borderColor: '#86efac' }}>
+    <div className="card" id="cohort-pricing-card" style={{ background: '#f0fdf4', borderColor: '#86efac' }}>
       <div className="row between" style={{ flexWrap: 'wrap', gap: 12 }}>
         <div>
           <h3 style={{ color: '#166534', margin: 0 }}>FY2026 コホート別 単価・粗利（獲得案件）</h3>

@@ -12,6 +12,36 @@ import {
 import { formatYmShort, monthsRange } from '../utils/month'
 import { parsePriorYearJson, samplePriorYearJson, serializePriorYearJson } from '../utils/priorYearJson'
 
+/**
+ * 年間ブレンド単価を算出（参考値）
+ * = 年間売上 / (平均件数 × 総営業日数)
+ * 件数は「各月初 件数」を平均。データ不足時は 0 を返す。
+ */
+function computeBlendedUnitPrice(py: PriorYearPlan, months: string[]): number {
+  if (months.length === 0) return 0
+  let totRev = 0
+  let totWd = 0
+  for (const m of months) {
+    const d = py.monthlyData.find((x) => x.month === m)
+    totRev += d?.revenue ?? 0
+    const wd = py.workingDaysByMonth?.[m] ?? py.defaultWorkingDays ?? 0
+    totWd += wd
+  }
+  if (totRev <= 0 || totWd <= 0) return 0
+
+  // 月初件数を各月加算 → 平均
+  let running = (py.initialCounts.partner || 0) + (py.initialCounts.vendor || 0) + (py.initialCounts.employment || 0)
+  let sumStart = 0
+  for (const m of months) {
+    sumStart += running
+    const d = py.monthlyData.find((x) => x.month === m)
+    running += (d?.acquisition ?? 0) - (d?.termination ?? 0)
+  }
+  const avgCases = sumStart / months.length
+  if (avgCases <= 0) return 0
+  return Math.round(totRev / (avgCases * totWd))
+}
+
 export default function PriorYearPanel() {
   const plan = usePlanStore((s) => s.plan)
   const setPlan = usePlanStore((s) => s.setPlan)
@@ -645,6 +675,147 @@ function PriorYearEditor({ py, onDisable }: { py: PriorYearPlan; onDisable: () =
               </tr>
             </tbody>
           </table>
+        </div>
+      </div>
+
+      <div className="card" style={{ background: '#fef3c7', borderColor: '#fde68a' }}>
+        <div className="row between" style={{ flexWrap: 'wrap', gap: 8 }}>
+          <h3 style={{ color: '#92400e' }}>前年 年間サマリー（獲得/終了 単価・粗利率・参考値）</h3>
+          <div className="muted" style={{ fontSize: 12 }}>
+            ダッシュボード「終了単価」カードや、カテゴリ設定の「前年実績サマリー」で参照されます。計算には影響しません。
+          </div>
+        </div>
+
+        <div className="scroll-x" style={{ marginTop: 8 }}>
+          <table>
+            <thead>
+              <tr>
+                <th>項目</th>
+                <th>獲得案件</th>
+                <th>終了案件</th>
+                <th className="muted" style={{ fontWeight: 400 }}>一括操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>平均単価（円/日）</strong></td>
+                <td style={{ padding: 2 }}>
+                  <input
+                    type="number"
+                    min={0}
+                    value={py.annualSummary?.acquisitionUnitPrice ?? 0}
+                    onChange={(e) => {
+                      const v = Math.max(0, Math.round(Number(e.target.value) || 0))
+                      setPlan((p) => p.priorYear
+                        ? { ...p, priorYear: { ...p.priorYear, annualSummary: { ...(p.priorYear.annualSummary ?? {}), acquisitionUnitPrice: v } } }
+                        : p)
+                    }}
+                    style={{ maxWidth: 120, textAlign: 'right' }}
+                  />
+                </td>
+                <td style={{ padding: 2 }}>
+                  <input
+                    type="number"
+                    min={0}
+                    value={py.annualSummary?.terminationUnitPrice ?? 0}
+                    onChange={(e) => {
+                      const v = Math.max(0, Math.round(Number(e.target.value) || 0))
+                      setPlan((p) => p.priorYear
+                        ? { ...p, priorYear: { ...p.priorYear, annualSummary: { ...(p.priorYear.annualSummary ?? {}), terminationUnitPrice: v } } }
+                        : p)
+                    }}
+                    style={{ maxWidth: 120, textAlign: 'right' }}
+                  />
+                </td>
+                <td>
+                  <button
+                    className="small ghost"
+                    style={{ fontSize: 11 }}
+                    onClick={() => {
+                      const blended = computeBlendedUnitPrice(py, months)
+                      if (blended <= 0) {
+                        alert('月次売上または計算日数が未入力のためブレンド単価を算出できません。')
+                        return
+                      }
+                      if (!confirm(`獲得・終了の両方に年間ブレンド単価（¥${blended.toLocaleString()}/日）を入れますか？`)) return
+                      setPlan((p) => p.priorYear
+                        ? { ...p, priorYear: { ...p.priorYear, annualSummary: {
+                            ...(p.priorYear.annualSummary ?? {}),
+                            acquisitionUnitPrice: blended,
+                            terminationUnitPrice: blended,
+                          } } }
+                        : p)
+                    }}
+                  >
+                    年間ブレンドで埋める
+                  </button>
+                </td>
+              </tr>
+              <tr>
+                <td><strong>粗利率（%）</strong></td>
+                <td style={{ padding: 2 }}>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={0.01}
+                    value={py.annualSummary?.acquisitionMarginPct ?? 0}
+                    onChange={(e) => {
+                      const v = Math.max(0, Math.min(100, Math.round(Number(e.target.value) * 100) / 100 || 0))
+                      setPlan((p) => p.priorYear
+                        ? { ...p, priorYear: { ...p.priorYear, annualSummary: { ...(p.priorYear.annualSummary ?? {}), acquisitionMarginPct: v } } }
+                        : p)
+                    }}
+                    style={{ maxWidth: 100, textAlign: 'right' }}
+                  />
+                </td>
+                <td style={{ padding: 2 }}>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={0.01}
+                    value={py.annualSummary?.terminationMarginPct ?? 0}
+                    onChange={(e) => {
+                      const v = Math.max(0, Math.min(100, Math.round(Number(e.target.value) * 100) / 100 || 0))
+                      setPlan((p) => p.priorYear
+                        ? { ...p, priorYear: { ...p.priorYear, annualSummary: { ...(p.priorYear.annualSummary ?? {}), terminationMarginPct: v } } }
+                        : p)
+                    }}
+                    style={{ maxWidth: 100, textAlign: 'right' }}
+                  />
+                </td>
+                <td>
+                  <button
+                    className="small ghost"
+                    style={{ fontSize: 11 }}
+                    onClick={() => {
+                      if (totals.rev <= 0) {
+                        alert('月次売上・粗利が未入力のため年間粗利率を算出できません。')
+                        return
+                      }
+                      const pct = Math.round((totals.margin * 100) * 100) / 100
+                      if (!confirm(`獲得・終了の両方に年間粗利率（${pct.toFixed(2)}%）を入れますか？`)) return
+                      setPlan((p) => p.priorYear
+                        ? { ...p, priorYear: { ...p.priorYear, annualSummary: {
+                            ...(p.priorYear.annualSummary ?? {}),
+                            acquisitionMarginPct: pct,
+                            terminationMarginPct: pct,
+                          } } }
+                        : p)
+                    }}
+                  >
+                    年間粗利率で埋める
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>
+          ※ 実データで獲得・終了を分離できない場合は「年間ブレンド」「年間粗利率」で両方に同じ値を入れておき、把握でき次第 個別に上書きしてください。
+          獲得単価はカテゴリ設定 → 🎯 FY2026 コホート単価カードの「前年（FY前年）獲得案件 平均単価」の既定値としても使われます。
         </div>
       </div>
 

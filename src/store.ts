@@ -3,8 +3,45 @@ import { doc, getDoc, setDoc } from 'firebase/firestore'
 import type { Plan, PriorYearPlan } from './types'
 import { db, firebaseReady } from './firebase'
 import { addMonths, thisYm } from './utils/month'
+import {
+  type BusinessUnit,
+  DEFAULT_BUSINESS_UNIT,
+  isBusinessUnit,
+} from './data/businessUnits'
 
-const LS_KEY_PREFIX = 'teiki-plan:portfolio:'
+/**
+ * localStorage / Firestore キーの決め方（事業本部別）
+ * - 定期便(teiki) は既存パスをそのまま使う（後方互換）:
+ *     localStorage: teiki-plan:portfolio:{uid}
+ *     Firestore   : users/{uid}/plans/main
+ * - 新しい事業本部(urban 等) は別キー:
+ *     localStorage: teiki-plan:portfolio:bu:{unit}:{uid}
+ *     Firestore   : users/{uid}/plans/{unit}
+ */
+const LS_KEY_PREFIX_TEIKI = 'teiki-plan:portfolio:'
+const LS_KEY_PREFIX_BU = 'teiki-plan:portfolio:bu:'
+const LS_SELECTED_BU_KEY = 'teiki-plan:selectedBU'
+
+function firestoreDocId(bu: BusinessUnit): string {
+  return bu === 'teiki' ? 'main' : bu
+}
+
+function loadSelectedBU(): BusinessUnit {
+  try {
+    const v = localStorage.getItem(LS_SELECTED_BU_KEY)
+    if (isBusinessUnit(v)) return v
+  } catch {
+    /* noop */
+  }
+  return DEFAULT_BUSINESS_UNIT
+}
+function saveSelectedBU(bu: BusinessUnit) {
+  try {
+    localStorage.setItem(LS_SELECTED_BU_KEY, bu)
+  } catch {
+    /* noop */
+  }
+}
 
 function uid() {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4)
@@ -95,6 +132,7 @@ function samplePlan(): Plan {
 }
 
 interface PlanStore {
+  businessUnit: BusinessUnit
   plan: Plan
   uid: string | null
   loading: boolean
@@ -105,10 +143,13 @@ interface PlanStore {
   saveToCloud: () => Promise<void>
   loadFromCloud: () => Promise<void>
   resetToSample: () => void
+  setBusinessUnit: (bu: BusinessUnit) => Promise<void>
 }
 
-function lsKey(uid: string | null) {
-  return `${LS_KEY_PREFIX}${uid ?? 'local'}`
+function lsKey(uid: string | null, bu: BusinessUnit) {
+  // teiki は後方互換のため旧プレフィックスを使う
+  if (bu === 'teiki') return `${LS_KEY_PREFIX_TEIKI}${uid ?? 'local'}`
+  return `${LS_KEY_PREFIX_BU}${bu}:${uid ?? 'local'}`
 }
 
 /** 新しいスキーマの Plan かどうかチェック。 */
@@ -225,55 +266,66 @@ function migratePlan(plan: any): Plan {
   return plan as Plan
 }
 
-function loadLocal(uid: string | null): Plan | null {
+function loadLocal(uid: string | null, bu: BusinessUnit): Plan | null {
   try {
-    const raw = localStorage.getItem(lsKey(uid))
+    const raw = localStorage.getItem(lsKey(uid, bu))
     if (!raw) return null
     const obj = JSON.parse(raw)
     if (!isValidPlan(obj)) {
-      console.warn('[teiki-plan] 旧スキーマを検出したのでサンプルを使用します')
+      console.warn(`[teiki-plan] (${bu}) 旧スキーマを検出したのでサンプルを使用します`)
       return null
     }
     return migratePlan(obj)
   } catch (e) {
-    console.warn('[teiki-plan] localStorage 読込エラー:', e)
+    console.warn(`[teiki-plan] (${bu}) localStorage 読込エラー:`, e)
     return null
   }
 }
-function saveLocal(uid: string | null, plan: Plan) {
+function saveLocal(uid: string | null, plan: Plan, bu: BusinessUnit) {
   try {
-    localStorage.setItem(lsKey(uid), JSON.stringify(plan))
+    localStorage.setItem(lsKey(uid, bu), JSON.stringify(plan))
   } catch {
     /* noop */
   }
 }
 
+async function fetchCloudPlan(uid: string, bu: BusinessUnit): Promise<Plan | null> {
+  if (!firebaseReady || !db) return null
+  try {
+    const ref = doc(db, 'users', uid, 'plans', firestoreDocId(bu))
+    const snap = await getDoc(ref)
+    if (!snap.exists()) return null
+    const data = snap.data()
+    if (!isValidPlan(data)) {
+      console.warn(`[teiki-plan] (${bu}) Firestore に旧スキーマが残っています。`)
+      return null
+    }
+    return migratePlan(data)
+  } catch (e) {
+    console.warn(`[teiki-plan] (${bu}) Firestore load failed`, e)
+    return null
+  }
+}
+
+const INITIAL_BU: BusinessUnit = loadSelectedBU()
+
 export const usePlanStore = create<PlanStore>((set, get) => ({
-  plan: loadLocal(null) ?? samplePlan(),
+  businessUnit: INITIAL_BU,
+  plan: loadLocal(null, INITIAL_BU) ?? samplePlan(),
   uid: null,
   loading: false,
   dirty: false,
 
   setUid: async (uid) => {
+    const bu = get().businessUnit
     set({ uid, loading: true })
-    const local = loadLocal(uid)
+    const local = loadLocal(uid, bu)
     if (local) set({ plan: local })
-    if (uid && firebaseReady && db) {
-      try {
-        const ref = doc(db, 'users', uid, 'plans', 'main')
-        const snap = await getDoc(ref)
-        if (snap.exists()) {
-          const data = snap.data()
-          if (isValidPlan(data)) {
-            const migrated = migratePlan(data)
-            set({ plan: migrated })
-            saveLocal(uid, migrated)
-          } else {
-            console.warn('[teiki-plan] Firestore に旧スキーマが残っています。サンプルで表示します（保存するまで上書きされません）')
-          }
-        }
-      } catch (e) {
-        console.warn('Firestore load failed', e)
+    if (uid) {
+      const cloud = await fetchCloudPlan(uid, bu)
+      if (cloud) {
+        set({ plan: cloud })
+        saveLocal(uid, cloud, bu)
       }
     }
     set({ loading: false, dirty: false })
@@ -283,45 +335,67 @@ export const usePlanStore = create<PlanStore>((set, get) => ({
     const next = updater(get().plan)
     next.updatedAt = new Date().toISOString()
     set({ plan: next, dirty: true })
-    saveLocal(get().uid, next)
+    saveLocal(get().uid, next, get().businessUnit)
   },
 
   replacePlan: (next) => {
     next.updatedAt = new Date().toISOString()
     set({ plan: next, dirty: true })
-    saveLocal(get().uid, next)
+    saveLocal(get().uid, next, get().businessUnit)
   },
 
   saveToCloud: async () => {
-    const { uid, plan } = get()
+    const { uid, plan, businessUnit } = get()
     if (!uid || !firebaseReady || !db) {
       set({ dirty: false })
       return
     }
-    const ref = doc(db, 'users', uid, 'plans', 'main')
+    const ref = doc(db, 'users', uid, 'plans', firestoreDocId(businessUnit))
     await setDoc(ref, plan)
     set({ dirty: false })
   },
 
   loadFromCloud: async () => {
-    const { uid } = get()
-    if (!uid || !firebaseReady || !db) return
-    const ref = doc(db, 'users', uid, 'plans', 'main')
-    const snap = await getDoc(ref)
-    if (snap.exists()) {
-      const data = snap.data()
-      if (isValidPlan(data)) {
-        const migrated = migratePlan(data)
-        set({ plan: migrated })
-        saveLocal(uid, migrated)
-      }
+    const { uid, businessUnit } = get()
+    if (!uid) return
+    const cloud = await fetchCloudPlan(uid, businessUnit)
+    if (cloud) {
+      set({ plan: cloud })
+      saveLocal(uid, cloud, businessUnit)
     }
   },
 
   resetToSample: () => {
     const p = samplePlan()
     set({ plan: p, dirty: true })
-    saveLocal(get().uid, p)
+    saveLocal(get().uid, p, get().businessUnit)
+  },
+
+  setBusinessUnit: async (bu) => {
+    const { uid, plan, businessUnit: cur } = get()
+    if (bu === cur) return
+    // 現在の plan を現事業本部のスロットに保存しておく（未保存分も失わない）
+    saveLocal(uid, plan, cur)
+    saveSelectedBU(bu)
+
+    // 次の事業本部の plan をローカルから先にロード（即時反映）
+    const local = loadLocal(uid, bu)
+    set({
+      businessUnit: bu,
+      plan: local ?? samplePlan(),
+      dirty: false,
+      loading: !!uid,
+    })
+
+    // クラウドからも上書き取得
+    if (uid) {
+      const cloud = await fetchCloudPlan(uid, bu)
+      if (cloud) {
+        set({ plan: cloud })
+        saveLocal(uid, cloud, bu)
+      }
+      set({ loading: false })
+    }
   },
 }))
 

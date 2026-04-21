@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { User } from 'firebase/auth'
 import { doSignOut, firebaseReady, subscribeAuth } from './firebase'
 import { usePlanStore } from './store'
+import { BUSINESS_UNITS, BusinessUnitOrder } from './data/businessUnits'
 import Login from './components/Login'
 import Dashboard from './components/Dashboard'
 import MonthlyTable from './components/MonthlyTable'
@@ -27,10 +28,14 @@ export default function App() {
   const [guestMode, setGuestMode] = useState(false)
   const [view, setView] = useState<View>('dashboard')
   const [saving, setSaving] = useState(false)
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
 
   const setUid = usePlanStore((s) => s.setUid)
   const dirty = usePlanStore((s) => s.dirty)
   const saveToCloud = usePlanStore((s) => s.saveToCloud)
+  const businessUnit = usePlanStore((s) => s.businessUnit)
+  const setBusinessUnit = usePlanStore((s) => s.setBusinessUnit)
+  const bu = BUSINESS_UNITS[businessUnit]
 
   useEffect(() => {
     const unsub = subscribeAuth((u) => {
@@ -46,11 +51,33 @@ export default function App() {
     return () => unsub()
   }, [setUid])
 
+  // ブラウザタブのタイトルを事業本部名に同期
+  useEffect(() => {
+    document.title = `${bu.fullName} 月次計画`
+  }, [bu.fullName])
+
   // 子コンポーネント（Dashboard のリンクカード等）からの遷移リクエスト
+  //  payload: { view: View, subTab?: string, anchor?: string } or just View string
   useEffect(() => {
     function handleNav(e: Event) {
-      const detail = (e as CustomEvent).detail as View
-      if (detail) setView(detail)
+      const raw = (e as CustomEvent).detail
+      const payload =
+        typeof raw === 'string'
+          ? { view: raw as View }
+          : (raw as { view: View; subTab?: string; anchor?: string })
+      if (!payload?.view) return
+      setView(payload.view)
+      setMobileNavOpen(false)
+      // 描画後にサブタブ切替 & アンカースクロール
+      setTimeout(() => {
+        if (payload.subTab) {
+          window.dispatchEvent(new CustomEvent('nav-subtab', { detail: payload.subTab }))
+        }
+        if (payload.anchor) {
+          const el = document.getElementById(payload.anchor)
+          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        }
+      }, 80)
     }
     window.addEventListener('navigate-to-view', handleNav)
     return () => window.removeEventListener('navigate-to-view', handleNav)
@@ -77,14 +104,49 @@ export default function App() {
   }
 
   return (
-    <div className="app">
+    <div className={`app ${mobileNavOpen ? 'mobile-nav-open' : ''}`}>
+      {/* モバイル用バックドロップ */}
+      {mobileNavOpen && (
+        <div
+          className="mobile-backdrop"
+          onClick={() => setMobileNavOpen(false)}
+          aria-hidden
+        />
+      )}
       <aside className="sidebar">
-        <h1>📈 定期セグメント</h1>
+        <h1 style={{ color: bu.accent }}>{bu.icon} {bu.shortName}</h1>
+
+        {/* 事業本部スイッチ */}
+        <div className="bu-switcher" role="tablist" aria-label="事業本部切替">
+          {BusinessUnitOrder.map((id) => {
+            const meta = BUSINESS_UNITS[id]
+            const active = id === businessUnit
+            return (
+              <button
+                key={id}
+                role="tab"
+                aria-selected={active}
+                className={`bu-tab ${active ? 'active' : ''}`}
+                onClick={() => {
+                  if (id === businessUnit) return
+                  // 未保存があれば警告
+                  if (dirty && !confirm('未保存の変更があります。事業本部を切り替えると、現在の編集はローカルに保存されたうえで別本部のデータを読み込みます。続けますか？')) return
+                  setBusinessUnit(id)
+                }}
+                style={active ? { background: meta.accent, borderColor: meta.accent } : undefined}
+                title={meta.fullName}
+              >
+                <span style={{ marginRight: 4 }}>{meta.icon}</span>{meta.shortName}
+              </button>
+            )
+          })}
+        </div>
+
         {NAV.map((n) => (
           <div
             key={n.id}
             className={`nav-item ${view === n.id ? 'active' : ''}`}
-            onClick={() => setView(n.id)}
+            onClick={() => { setView(n.id); setMobileNavOpen(false) }}
           >
             <span style={{ marginRight: 8 }}>{n.icon}</span>{n.label}
           </div>
@@ -97,7 +159,19 @@ export default function App() {
 
       <main className="main">
         <div className="topbar">
-          <h2>{NAV.find((n) => n.id === view)?.label}</h2>
+          <button
+            className="hamburger"
+            onClick={() => setMobileNavOpen((v) => !v)}
+            aria-label="メニューを開く"
+          >
+            ☰
+          </button>
+          <h2>
+            {NAV.find((n) => n.id === view)?.label}
+            <span className="muted" style={{ fontSize: 12, marginLeft: 8, fontWeight: 400 }}>
+              / {bu.fullName}
+            </span>
+          </h2>
           <div className="user">
             {dirty && <span style={{ color: '#d97706' }}>● 未保存の変更</span>}
             {user ? (
