@@ -4,6 +4,7 @@ import type {
   CategoryMonthlyCell,
   MonthlyRow,
   Plan,
+  PriorYearCaseDetail,
   PriorYearPlan,
   Ratios,
   WorkerCategory,
@@ -103,6 +104,57 @@ export function workingDaysOf(plan: Plan, ym: string): number {
 }
 
 /** 指定月に有効な 同区分uplift（partner/vendor）を返す */
+/** カテゴリの1件1日あたり原価（円）を返す。rate モードは revenuePerCase を使って算出、amount モードはそのまま。 */
+export function costPerCasePerDay(
+  plan: Plan,
+  cat: WorkerCategory,
+  ym: string,
+): number {
+  const cfg = effectiveConfigAt(plan, cat, ym)
+  const revPerCase = effectiveRevenuePerCaseAt(plan, ym)
+  if (cfg.costModel === 'rate') return revPerCase * cfg.costRate / 100
+  return cfg.costAmount
+}
+
+/** 非対角入替（from ≠ to）1件1日あたりの粗利インパクト（円）= oldCost - newCost。
+ *  正の値なら「低原価カテゴリへ移動 → 粗利改善」、負なら「高原価カテゴリへ移動 → 粗利悪化」。
+ */
+export function nonDiagonalProfitPerCasePerDay(
+  plan: Plan,
+  from: WorkerCategory,
+  to: WorkerCategory,
+  ym: string,
+): number {
+  if (from === to) return 0
+  return costPerCasePerDay(plan, from, ym) - costPerCasePerDay(plan, to, ym)
+}
+
+/** 非対角入替の、指定ペアの「指定月以前の累計移動件数」。 */
+export function cumulativeNonDiagonalCount(
+  transfers: TransferEvent[],
+  untilYm: string,
+  from: WorkerCategory,
+  to: WorkerCategory,
+): number {
+  if (from === to) return 0
+  let s = 0
+  for (const t of transfers) {
+    if (t.from !== from || t.to !== to) continue
+    if (ymLte(t.month, untilYm)) s += t.count
+  }
+  return s
+}
+
+/** 手数料率を差し引いた実効倍率を返す。入力 X 円/件/日 × factor = 実効原価増。
+ *  例: 運送店=18%手数料 → factor = 0.82。業者=0%手数料 → factor = 1.0。
+ */
+export function costUpliftFactor(plan: Plan, cat: WorkerCategory): number {
+  const pct = plan.costUpliftCommissionRate?.[cat] ?? 0
+  if (!Number.isFinite(pct) || pct <= 0) return 1
+  if (pct >= 100) return 0
+  return (100 - pct) / 100
+}
+
 export function effectiveDiagonalUpliftAt(
   plan: Plan,
   ym: string,
@@ -146,6 +198,8 @@ export function computeMonthly(plan: Plan): MonthlyRow[] {
   let prevCounts: CategoryMap<number> = { ...plan.initialCounts }
   // 同区分入替の累計件数（partner/vendor）
   const cumDiag: { partner: number; vendor: number } = { partner: 0, vendor: 0 }
+  // 終了案件の累計件数（終了コホート単価 補正用）
+  let cumTerm = 0
 
   for (const ym of months) {
     const counts: CategoryMap<number> = { ...prevCounts }
@@ -162,6 +216,7 @@ export function computeMonthly(plan: Plan): MonthlyRow[] {
       counts[c] += acqDist[c]
       counts[c] -= termDist[c]
     }
+    cumTerm += termTotal
 
     // (3) 入替（対角は件数に影響なし、non-diagonal のみ counts を移動）
     let transfersTotal = 0
@@ -188,8 +243,8 @@ export function computeMonthly(plan: Plan): MonthlyRow[] {
     //  + 同区分入替の累計件数 × uplift × 営業日数 を該当カテゴリの原価に加算
     const days = workingDaysOf(plan, ym)
     const revPerCase = effectiveRevenuePerCaseAt(plan, ym)
-    const upliftPartner = effectiveDiagonalUpliftAt(plan, ym, 'partner')
-    const upliftVendor = effectiveDiagonalUpliftAt(plan, ym, 'vendor')
+    const upliftPartner = effectiveDiagonalUpliftAt(plan, ym, 'partner') * costUpliftFactor(plan, 'partner')
+    const upliftVendor = effectiveDiagonalUpliftAt(plan, ym, 'vendor') * costUpliftFactor(plan, 'vendor')
     const diagCostPartner = Math.round(cumDiag.partner * upliftPartner * days)
     const diagCostVendor = Math.round(cumDiag.vendor * upliftVendor * days)
 
@@ -243,6 +298,26 @@ export function computeMonthly(plan: Plan): MonthlyRow[] {
     const cohortD = cohortDeltaAt(plan, ym)
     totalRevenue += cohortD.deltaRevenue
     totalCost += cohortD.deltaCost
+
+    // (7.5) 終了コホート単価 補正（終了案件の実勢単価がプール平均と異なる場合）
+    //   現行モデル: 件数減少分を「プール単価 P で失った」と仮定
+    //   実態: 終了案件の単価が p_t なら、失うのは (p_t × days) のみ
+    //   補正 = (P − p_t) × 累計終了件数 × days
+    //   原価は同じ実効原価率で比例補正（割り切りモデル）
+    //   p_t は effectiveTerminationUnitPrice（前年ベース+調整 or 手動override）
+    const termUnitPrice = effectiveTerminationUnitPrice(plan)
+    let termRevAdj = 0
+    let termCostAdj = 0
+    if (termUnitPrice > 0 && termUnitPrice !== revPerCase && cumTerm > 0) {
+      termRevAdj = Math.round((revPerCase - termUnitPrice) * cumTerm * days)
+      // 実効原価率: 当月のベース原価 / ベース売上 で按分
+      const baseRev = totalRevenue - termRevAdj - piCum.revenue - cohortD.deltaRevenue - priceRev.revenue
+      const baseCost = totalCost - termCostAdj - piCum.cost - cohortD.deltaCost - costRev - priceRev.costAdd
+      const effRate = baseRev > 0 ? baseCost / baseRev : 0
+      termCostAdj = Math.round(termRevAdj * effRate)
+      totalRevenue += termRevAdj
+      totalCost += termCostAdj
+    }
 
     const totalProfit = totalRevenue - totalCost
     const margin = totalRevenue > 0 ? totalProfit / totalRevenue : 0
@@ -302,15 +377,87 @@ export function cumulativePriceIncreaseAt(
 
 /* ====================================================
    コホート別 単価・粗利（FY2026）
+
+   【ベースライン自動導出モデル】
+   - 前年ベース単価は、案件明細 (priorYear.cases) があれば「計算日単価 = 予定売上/月 ÷ 月平均営業日数」の
+     平均から自動導出する。case データがなければ手動フィールド（priorAcquisitionUnitPrice /
+     priorTerminationUnitPrice / annualSummary.terminationUnitPrice / plan.revenuePerCase）にフォールバック。
+   - FY2026 計画値 = 前年ベース + 調整（Abs + base×Pct/100）
+   - 獲得: priorAcquisitionUnitPrice (override) + acquisitionUnitPriceUp{Abs,Pct}
+   - 終了: priorTerminationUnitPrice (override) + terminationUnitPriceAdj{Abs,Pct}
+     ※ 追加で `terminationUnitPrice` が > 0 に設定されていれば、最終値の手動オーバーライドとして扱う
    ==================================================== */
 
-/** FY2026 獲得単価（前年 baseline + abs + %） */
+/** 明細からメイン+サブ合計の計算日単価（円/件/日）を算出。case なしなら undefined を返す。 */
+function derivedAvgCalcUnitFromCases(
+  cases: PriorYearCaseDetail[] | undefined,
+  kind: 'acq' | 'term',
+  avgWorkingDays: number,
+): number | undefined {
+  if (!cases || cases.length === 0 || avgWorkingDays <= 0) return undefined
+  const rows = cases.filter((c) => c.kind === kind)
+  if (rows.length === 0) return undefined
+  let sum = 0
+  for (const r of rows) {
+    const rev = r.plannedRevenue ?? 0
+    sum += rev / avgWorkingDays
+  }
+  return Math.round(sum / rows.length)
+}
+
+/** 前年の月平均営業日数（priorYear.workingDaysByMonth の平均）。未設定は defaultWorkingDays。 */
+function priorAvgWorkingDays(plan: Plan): number {
+  const py = plan.priorYear
+  if (!py) return plan.defaultWorkingDays || 20
+  const months = monthsRange(py.baseMonth, py.horizonMonths)
+  const vals = months.map((m) => py.workingDaysByMonth?.[m] ?? py.defaultWorkingDays ?? 20)
+  return vals.length > 0 ? vals.reduce((s, v) => s + v, 0) / vals.length : py.defaultWorkingDays || 20
+}
+
+/** 前年 獲得単価ベース（計画の前年ベース値）。明細から自動 or 手動override or fallback。 */
+export function effectiveAcquisitionBasePrice(plan: Plan): number {
+  const manual = plan.cohortPricing?.priorAcquisitionUnitPrice ?? 0
+  if (manual > 0) return manual
+  const avgWd = priorAvgWorkingDays(plan)
+  const derived = derivedAvgCalcUnitFromCases(plan.priorYear?.cases, 'acq', avgWd)
+  if (derived && derived > 0) return derived
+  // 最終フォールバック: annualSummary.acquisitionUnitPrice または プール単価
+  const sum = plan.priorYear?.annualSummary?.acquisitionUnitPrice ?? 0
+  if (sum > 0) return sum
+  return plan.revenuePerCase ?? 0
+}
+
+/** 前年 終了単価ベース。明細 → 手動override(priorTerminationUnitPrice) → annualSummary → プール単価 */
+export function effectiveTerminationBasePrice(plan: Plan): number {
+  const manual = plan.cohortPricing?.priorTerminationUnitPrice ?? 0
+  if (manual > 0) return manual
+  const avgWd = priorAvgWorkingDays(plan)
+  const derived = derivedAvgCalcUnitFromCases(plan.priorYear?.cases, 'term', avgWd)
+  if (derived && derived > 0) return derived
+  const sum = plan.priorYear?.annualSummary?.terminationUnitPrice ?? 0
+  if (sum > 0) return sum
+  return plan.revenuePerCase ?? 0
+}
+
+/** FY2026 獲得単価（前年ベース + Abs + %） */
 export function effectiveAcquisitionUnitPrice(plan: Plan): number {
   const c = plan.cohortPricing
   if (!c) return plan.revenuePerCase
-  const base = c.priorAcquisitionUnitPrice ?? 0
+  const base = effectiveAcquisitionBasePrice(plan)
   const abs = c.acquisitionUnitPriceUpAbs ?? 0
   const pct = c.acquisitionUnitPriceUpPct ?? 0
+  return base + abs + (base * pct) / 100
+}
+
+/** FY2026 終了単価（前年ベース + 調整）。`terminationUnitPrice` が > 0 なら手動 override として最優先。 */
+export function effectiveTerminationUnitPrice(plan: Plan): number {
+  const c = plan.cohortPricing
+  if (!c) return plan.revenuePerCase
+  const override = c.terminationUnitPrice ?? 0
+  if (override > 0) return override
+  const base = effectiveTerminationBasePrice(plan)
+  const abs = c.terminationUnitPriceAdjAbs ?? 0
+  const pct = c.terminationUnitPriceAdjPct ?? 0
   return base + abs + (base * pct) / 100
 }
 
@@ -325,8 +472,7 @@ export function effectiveAcquisitionProfitPerCaseDay(
   plan: Plan,
   cat: WorkerCategory,
 ): { prior: number; priceGain: number; uplift: number; current: number } {
-  const base = plan.revenuePerCase ?? 0
-  const priorUnit = plan.cohortPricing?.priorAcquisitionUnitPrice ?? base
+  const priorUnit = effectiveAcquisitionBasePrice(plan)
   const acqUnit = effectiveAcquisitionUnitPrice(plan)
   const rate = plan.categories[cat]?.costRate ?? 0
   const prior = priorUnit * (1 - rate / 100)
@@ -976,13 +1122,15 @@ export interface MarginBridgeRow {
   daily: number  // totalRevenue / workingDays
 }
 
-/** 部分 原価改定 の月次影響額（円）= 全 CostRevision の effectiveMonth <= ym の合計 */
+/** 部分 原価改定 の月次影響額（円）= 全 CostRevision の effectiveMonth <= ym の合計。
+ *  カテゴリ別 手数料率 (costUpliftCommissionRate) を差し引いた実効額で計上する。 */
 export function costRevisionImpactAt(plan: Plan, ym: string): number {
   const days = workingDaysOf(plan, ym)
   let total = 0
   for (const cr of plan.costRevisions ?? []) {
     if (!ymLte(cr.effectiveMonth, ym)) continue
-    total += cr.count * cr.amountPerCaseDay * days
+    const factor = costUpliftFactor(plan, cr.category)
+    total += cr.count * cr.amountPerCaseDay * factor * days
   }
   return Math.round(total)
 }
@@ -1055,6 +1203,7 @@ export function computeMarginBridge(plan: Plan): MarginBridgeRow[] {
   // 獲得/終了のみ反映（入替なし）の並行カウント
   let prevAcqTermCounts: CategoryMap<number> = { ...plan.initialCounts }
   const cumDiag: { partner: number; vendor: number } = { partner: 0, vendor: 0 }
+  let cumTerm = 0
 
   for (const ym of months) {
     const counts: CategoryMap<number> = { ...prevCounts }
@@ -1073,6 +1222,7 @@ export function computeMarginBridge(plan: Plan): MarginBridgeRow[] {
       countsAcqTerm[c] += acqDist[c]
       countsAcqTerm[c] -= termDist[c]
     }
+    cumTerm += termTotal
 
     const transfersNet: CategoryMap<number> = { partner: 0, vendor: 0, employment: 0 }
     for (const t of plan.transfers) {
@@ -1094,8 +1244,8 @@ export function computeMarginBridge(plan: Plan): MarginBridgeRow[] {
 
     const days = workingDaysOf(plan, ym)
     const revPerCase = effectiveRevenuePerCaseAt(plan, ym)
-    const upliftP = effectiveDiagonalUpliftAt(plan, ym, 'partner')
-    const upliftV = effectiveDiagonalUpliftAt(plan, ym, 'vendor')
+    const upliftP = effectiveDiagonalUpliftAt(plan, ym, 'partner') * costUpliftFactor(plan, 'partner')
+    const upliftV = effectiveDiagonalUpliftAt(plan, ym, 'vendor') * costUpliftFactor(plan, 'vendor')
     const diagCostP = Math.round(cumDiag.partner * upliftP * days)
     const diagCostV = Math.round(cumDiag.vendor * upliftV * days)
     const upliftCost = diagCostP + diagCostV
@@ -1123,8 +1273,18 @@ export function computeMarginBridge(plan: Plan): MarginBridgeRow[] {
     const costRev = costRevisionImpactAt(plan, ym)
     const priceRev = priceRevisionImpactAt(plan, ym)
 
-    const totalRevenue = baseRevenue + pi.revenue + coh.deltaRevenue + priceRev.revenue
-    const totalCost = baseCost + upliftCost + pi.cost + coh.deltaCost + costRev + priceRev.costAdd
+    // 終了コホート単価 補正（売上＆原価を実効原価率で比例補正）
+    const termUnitPrice = effectiveTerminationUnitPrice(plan)
+    let termRevAdj = 0
+    let termCostAdj = 0
+    if (termUnitPrice > 0 && termUnitPrice !== revPerCase && cumTerm > 0) {
+      termRevAdj = Math.round((revPerCase - termUnitPrice) * cumTerm * days)
+      const effRate = baseRevenue > 0 ? baseCost / baseRevenue : 0
+      termCostAdj = Math.round(termRevAdj * effRate)
+    }
+
+    const totalRevenue = baseRevenue + pi.revenue + coh.deltaRevenue + priceRev.revenue + termRevAdj
+    const totalCost = baseCost + upliftCost + pi.cost + coh.deltaCost + costRev + priceRev.costAdd + termCostAdj
     const totalProfit = totalRevenue - totalCost
 
     const baseMargin = baseRevenue > 0 ? (baseRevenue - baseCost) / baseRevenue : 0

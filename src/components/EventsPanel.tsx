@@ -16,7 +16,9 @@ import { WorkerCategoryLabels, WorkerCategoryOrder } from '../types'
 import {
   ALL_TRANSFER_PAIRS,
   computePriorYearEndCounts,
+  costUpliftFactor,
   cumulativeDiagonalCount,
+  cumulativeNonDiagonalCount,
   cumulativePriceIncreaseAt,
   diagonalCount,
   distributeIntegers,
@@ -24,6 +26,7 @@ import {
   effectiveRatio,
   getTransferAmount,
   monthlyNewPriceIncreaseAt,
+  nonDiagonalProfitPerCasePerDay,
   priorYm,
   ratioSum,
   totalInflow,
@@ -249,6 +252,61 @@ function RatioPanel() {
           arr[idx] = { ...arr[idx], [kind]: row.ratio }
         } else {
           arr.push({ month: row.target, [kind]: row.ratio })
+        }
+      }
+      return { ...p, monthlyRatios: arr }
+    })
+  }
+
+  /** 前年の年間合計 acq/term から単一の平均比率を算出し、FY2026 の全月に同じ値で一括反映する。 */
+  function copyPriorYearAnnualAvgRatiosFor(kind: 'acquisition' | 'termination') {
+    if (!plan.priorYear) {
+      alert('前年実績が未登録です。')
+      return
+    }
+    const py = plan.priorYear
+    const label = kind === 'acquisition' ? '獲得' : '終了'
+
+    // 年間合計（カテゴリ別）
+    let P = 0, V = 0, E = 0
+    for (const d of py.monthlyData) {
+      const by = kind === 'acquisition' ? d.acquisitionByCategory : d.terminationByCategory
+      if (!by) continue
+      P += by.partner || 0
+      V += by.vendor || 0
+      E += by.employment || 0
+    }
+    const total = P + V + E
+    if (total <= 0) {
+      alert(`前年実績のカテゴリ別${label}件数（年間合計）が見つかりません。`)
+      return
+    }
+    const ratio: Ratios = {
+      partner: Math.round((P / total) * 100),
+      vendor: Math.round((V / total) * 100),
+      employment: Math.round((E / total) * 100),
+    }
+    const diff = 100 - (ratio.partner + ratio.vendor + ratio.employment)
+    ratio.partner += diff
+
+    if (
+      !confirm(
+        `前年(${py.fiscalYear})の${label}カテゴリ別 年間合計から平均比率を算出し、FY2026 の全月に同じ値で上書きします:\n\n` +
+        `  運送店 ${ratio.partner}% / 業者 ${ratio.vendor}% / 社員 ${ratio.employment}%\n` +
+        `  （年間計: 運送店 ${P.toLocaleString()} / 業者 ${V.toLocaleString()} / 社員 ${E.toLocaleString()} = ${total.toLocaleString()}件）\n\n` +
+        `既存の${label}比率上書きは全て置き換えられます。続行しますか？`,
+      )
+    )
+      return
+
+    setPlan((p) => {
+      const arr = [...p.monthlyRatios]
+      for (const m of months) {
+        const idx = arr.findIndex((x) => x.month === m)
+        if (idx >= 0) {
+          arr[idx] = { ...arr[idx], [kind]: ratio }
+        } else {
+          arr.push({ month: m, [kind]: ratio })
         }
       }
       return { ...p, monthlyRatios: arr }
@@ -561,14 +619,24 @@ function RatioPanel() {
             <div className="row between" style={{ flexWrap: 'wrap', gap: 8 }}>
               <h3 style={{ margin: 0, color: '#166534' }}>🟢 獲得 デフォルト配車比率（％）</h3>
               {hasPriorYear && (
-                <button
-                  className="small"
-                  style={{ background: '#16a34a' }}
-                  onClick={() => copyPriorYearRatiosFor('acquisition')}
-                  title="前年同月の獲得比率を FY2026 の月別オーバーライドに一括反映"
-                >
-                  📥 前年同月の比率を全月にコピー
-                </button>
+                <div className="row" style={{ gap: 4, flexWrap: 'wrap' }}>
+                  <button
+                    className="small"
+                    style={{ background: '#16a34a' }}
+                    onClick={() => copyPriorYearRatiosFor('acquisition')}
+                    title="前年同月の獲得比率を FY2026 の月別オーバーライドに一括反映"
+                  >
+                    📅 前年同月の比率を全月にコピー
+                  </button>
+                  <button
+                    className="small"
+                    style={{ background: '#0369a1' }}
+                    onClick={() => copyPriorYearAnnualAvgRatiosFor('acquisition')}
+                    title="前年の年間合計から平均獲得比率を算出し、全月に同じ値で一括反映"
+                  >
+                    📊 前年 年平均比率を全月にコピー
+                  </button>
+                </div>
               )}
             </div>
             <div className="scroll-x">
@@ -687,14 +755,24 @@ function RatioPanel() {
                   🔀 獲得から導出（社員同数原則）
                 </button>
                 {hasPriorYear && (
-                  <button
-                    className="small"
-                    style={{ background: '#dc2626' }}
-                    onClick={() => copyPriorYearRatiosFor('termination')}
-                    title="前年同月の終了比率を FY2026 の月別オーバーライドに一括反映"
-                  >
-                    📥 前年同月の比率を全月にコピー
-                  </button>
+                  <>
+                    <button
+                      className="small"
+                      style={{ background: '#dc2626' }}
+                      onClick={() => copyPriorYearRatiosFor('termination')}
+                      title="前年同月の終了比率を FY2026 の月別オーバーライドに一括反映"
+                    >
+                      📅 前年同月の比率を全月にコピー
+                    </button>
+                    <button
+                      className="small"
+                      style={{ background: '#b91c1c' }}
+                      onClick={() => copyPriorYearAnnualAvgRatiosFor('termination')}
+                      title="前年の年間合計から平均終了比率を算出し、全月に同じ値で一括反映"
+                    >
+                      📊 前年 年平均比率を全月にコピー
+                    </button>
+                  </>
                 )}
               </div>
             </div>
@@ -1414,8 +1492,8 @@ function TransfersList() {
   }
 
   /** 前年の入替マトリクスを FY2026 の該当月（+12ヶ月）に引き継ぐ。
-   *  同区分uplift（diagonalUplift / diagonalUpliftByMonth）も併せて引き継ぎ。
    *  対象月の既存セルは上書き（対象外月はそのまま）。
+   *  同区分uplift（diagonalUplift / diagonalUpliftByMonth）は変更しない。
    */
   function importTransfersFromPriorYear() {
     if (!plan.priorYear) {
@@ -1436,14 +1514,11 @@ function TransfersList() {
       return
     }
     const total = py.transfers.filter((t) => monthSet.has(addMonths(t.month, 12))).length
-    const upliftMonthlyCount = py.diagonalUpliftByMonth.filter((r) => monthSet.has(addMonths(r.month, 12))).length
 
     const msg =
-      `前年(FY2025)の入替マトリクスを FY2026 に引き継ぎます:\n\n` +
-      `  転写セル数: ${total} 件（${targetsByMonth.size} ヶ月分）\n` +
-      `  同区分uplift（年度デフォルト）: 運送店 ¥${(py.diagonalUplift.partner ?? 0).toLocaleString()} / 業者 ¥${(py.diagonalUplift.vendor ?? 0).toLocaleString()}\n` +
-      `  同区分uplift 月別上書き: ${upliftMonthlyCount} ヶ月分\n\n` +
-      `対象月の既存セルは上書きされます。続行しますか？`
+      `前年(FY2025) の入替マトリクスを FY2026 の同月に転写します（+12ヶ月シフト）:\n\n` +
+      `  転写セル数: ${total} 件（${targetsByMonth.size} ヶ月分）\n\n` +
+      `対象月の入替件数セルのみ上書きします。同区分uplift（X円/件/日）の設定は変更されません。続行しますか？`
     if (!confirm(msg)) return
 
     setPlan((p) => {
@@ -1459,32 +1534,63 @@ function TransfersList() {
           nextTransfers = upsertTransferCell(nextTransfers, target, t.from, t.to, t.count, newId)
         }
       }
+      // diagonalUplift / diagonalUpliftByMonth はそのまま保持
+      return { ...p, transfers: nextTransfers }
+    })
+  }
 
-      // 同区分uplift デフォルト（年度一律）を引き継ぎ
-      const nextDefaultUplift = {
-        partner: py.diagonalUplift.partner ?? 0,
-        vendor: py.diagonalUplift.vendor ?? 0,
-      }
+  /** 前年の入替マトリクスを「行ごとに年合計 / 12」で均した値で各月を上書き。
+   *  同区分uplift（diagonalUplift / diagonalUpliftByMonth）は変更しない。
+   */
+  function importTransfersFromPriorYearMonthlyAvg() {
+    if (!plan.priorYear) {
+      alert('前年実績が未登録です。')
+      return
+    }
+    const py = plan.priorYear
+    // 9ペアごとに前年の年合計件数を集計
+    const rowSum: Record<string, number> = {}
+    for (const pair of ALL_TRANSFER_PAIRS) {
+      const key = `${pair.from}>${pair.to}`
+      rowSum[key] = py.transfers
+        .filter((t) => t.from === pair.from && t.to === pair.to)
+        .reduce((s, t) => s + (t.count || 0), 0)
+    }
+    const nonZero = Object.values(rowSum).reduce((s, v) => s + (v > 0 ? 1 : 0), 0)
+    if (nonZero === 0) {
+      alert('前年実績の入替データが空です。')
+      return
+    }
+    const preview = ALL_TRANSFER_PAIRS
+      .filter((p) => rowSum[`${p.from}>${p.to}`] > 0)
+      .map((p) => {
+        const s = rowSum[`${p.from}>${p.to}`]
+        const avg = s / 12
+        return `  ${WorkerCategoryLabels[p.from]}→${WorkerCategoryLabels[p.to]}: 年${s} ÷ 12 ≈ ${avg.toFixed(1)}/月`
+      })
+      .join('\n')
 
-      // 月別上書き（対象月のみ）
-      const nextByMonth = p.diagonalUpliftByMonth.slice()
-      for (const r of py.diagonalUpliftByMonth) {
-        const target = addMonths(r.month, 12)
-        if (!monthSet.has(target)) continue
-        const idx = nextByMonth.findIndex((x) => x.month === target)
-        const base: MonthlyDiagonalUpliftOverride = idx >= 0 ? { ...nextByMonth[idx] } : { month: target }
-        if (r.partner !== undefined) base.partner = r.partner
-        if (r.vendor !== undefined) base.vendor = r.vendor
-        if (idx >= 0) nextByMonth[idx] = base
-        else nextByMonth.push(base)
-      }
+    const msg =
+      `前年(FY2025) の入替マトリクスを「行ごとの年合計 ÷ 12」でならした値で FY2026 の各月を上書きします。\n\n${preview}\n\n` +
+      `※ 小数点第1位を四捨五入して整数化します。入替件数セルのみ上書き（同区分uplift X円/件/日 の設定は変更しません）。続行しますか？`
+    if (!confirm(msg)) return
 
-      return {
-        ...p,
-        transfers: nextTransfers,
-        diagonalUplift: nextDefaultUplift,
-        diagonalUpliftByMonth: nextByMonth,
+    setPlan((p) => {
+      let nextTransfers = p.transfers
+      // 対象範囲の既存セルを全クリア
+      const monthSet = new Set(months)
+      nextTransfers = nextTransfers.filter((t) => !monthSet.has(t.month))
+      for (const pair of ALL_TRANSFER_PAIRS) {
+        const s = rowSum[`${pair.from}>${pair.to}`]
+        if (s <= 0) continue
+        const avg = Math.max(0, Math.round(s / 12))
+        if (avg === 0) continue
+        for (const m of months) {
+          nextTransfers = upsertTransferCell(nextTransfers, m, pair.from, pair.to, avg, newId)
+        }
       }
+      // diagonalUplift / diagonalUpliftByMonth はそのまま保持
+      return { ...p, transfers: nextTransfers }
     })
   }
 
@@ -1539,26 +1645,73 @@ function TransfersList() {
   // 累計同区分入替件数と月次uplift cost
   const upliftSummary = useMemo(() => {
     return months.map((m) => {
+      const diagPnew = diagonalCount(plan.transfers, m, 'partner')   // 当月の新規件数
+      const diagVnew = diagonalCount(plan.transfers, m, 'vendor')
       const diagP = cumulativeDiagonalCount(plan.transfers, m, 'partner')
       const diagV = cumulativeDiagonalCount(plan.transfers, m, 'vendor')
-      const xp = effectiveDiagonalUpliftAt(plan, m, 'partner')
-      const xv = effectiveDiagonalUpliftAt(plan, m, 'vendor')
+      const xp = effectiveDiagonalUpliftAt(plan, m, 'partner') * costUpliftFactor(plan, 'partner')
+      const xv = effectiveDiagonalUpliftAt(plan, m, 'vendor') * costUpliftFactor(plan, 'vendor')
       const days = workingDaysOf(plan, m)
       return {
         month: m,
-        diagPartner: diagonalCount(plan.transfers, m, 'partner'),
-        diagVendor: diagonalCount(plan.transfers, m, 'vendor'),
+        diagPartner: diagPnew,
+        diagVendor: diagVnew,
         cumPartner: diagP,
         cumVendor: diagV,
         upliftP: xp,
         upliftV: xv,
+        // 当月 累積分（今月までに発生した同区分入替件数 × X × 当月日数） — 既存
         costP: Math.round(diagP * xp * days),
         costV: Math.round(diagV * xv * days),
+        // 当月「新規発生」ぶん（今月だけの新規件数 × X × 当月日数） — 参考表示
+        newCostP: Math.round(diagPnew * xp * days),
+        newCostV: Math.round(diagVnew * xv * days),
       }
     })
-  }, [months, plan.transfers, plan.diagonalUplift, plan.diagonalUpliftByMonth, plan.workingDaysByMonth, plan.defaultWorkingDays])
+  }, [months, plan.transfers, plan.diagonalUplift, plan.diagonalUpliftByMonth, plan.workingDaysByMonth, plan.defaultWorkingDays, plan.costUpliftCommissionRate])
   const upliftCostTotalP = upliftSummary.reduce((s, r) => s + r.costP, 0)
   const upliftCostTotalV = upliftSummary.reduce((s, r) => s + r.costV, 0)
+  const upliftNewCostTotalP = upliftSummary.reduce((s, r) => s + r.newCostP, 0)
+  const upliftNewCostTotalV = upliftSummary.reduce((s, r) => s + r.newCostV, 0)
+
+  // 非対角（from ≠ to）の入替による粗利インパクト（構成比変動）
+  //   per-pair の月別粗利影響 = 累計件数(その月まで) × 粗利影響/件/日 × 当月日数
+  //   粗利影響/件/日 = cost(from) - cost(to)（正値=低原価へ移動=粗利UP）
+  const nonDiagPairs = useMemo(
+    () => ALL_TRANSFER_PAIRS.filter((p) => p.from !== p.to),
+    [],
+  )
+  const mixImpact = useMemo(() => {
+    return nonDiagPairs.map((pair) => {
+      const perCaseDay = nonDiagonalProfitPerCasePerDay(plan, pair.from, pair.to, plan.baseMonth)
+      const monthly = months.map((m) => {
+        const cum = cumulativeNonDiagonalCount(plan.transfers, m, pair.from, pair.to)
+        const days = workingDaysOf(plan, m)
+        // 月ごとの粗利影響/件/日 も変わる可能性があるので毎月算出
+        const unit = nonDiagonalProfitPerCasePerDay(plan, pair.from, pair.to, m)
+        return { month: m, count: cum, profit: Math.round(cum * unit * days) }
+      })
+      const total = monthly.reduce((s, r) => s + r.profit, 0)
+      return { pair, perCaseDay, monthly, total }
+    })
+  }, [nonDiagPairs, plan, months])
+  const mixImpactMonthly = useMemo(() => {
+    return months.map((m, idx) => mixImpact.reduce((s, r) => s + r.monthly[idx].profit, 0))
+  }, [mixImpact, months])
+  const mixImpactYearTotal = mixImpactMonthly.reduce((s, v) => s + v, 0)
+
+  // 入替 合計インパクト（構成比変動 − 同区分 uplift 原価）
+  const totalImpactMonthly = useMemo(() => {
+    return months.map((m, idx) => {
+      const mix = mixImpactMonthly[idx]
+      const up = upliftSummary[idx].costP + upliftSummary[idx].costV
+      return mix - up
+    })
+  }, [mixImpactMonthly, upliftSummary, months])
+  const totalImpactYear = totalImpactMonthly.reduce((s, v) => s + v, 0)
+
+  const catColor = (c: WorkerCategory) =>
+    c === 'partner' ? '#2563eb' : c === 'vendor' ? '#7c3aed' : '#059669'
 
   // カテゴリ別 月次 転出/転入
   const monthlyCategoryFlows = useMemo(() => {
@@ -1580,14 +1733,24 @@ function TransfersList() {
           <h3>月別 入替マトリクス（from → to の件数・9マス）</h3>
           <div className="row">
             {hasPriorYearTransfers && (
-              <button
-                className="small"
-                onClick={importTransfersFromPriorYear}
-                style={{ background: '#7c3aed' }}
-                title="前年(FY2025)の入替マトリクス + 同区分uplift設定 を FY2026 に引き継ぎます（+12ヶ月シフト）"
-              >
-                📥 前年の数字を持ってくる
-              </button>
+              <>
+                <button
+                  className="small"
+                  onClick={importTransfersFromPriorYear}
+                  style={{ background: '#7c3aed' }}
+                  title="前年(FY2025) の同月の数字をそのまま FY2026 の各月にコピーします（+12ヶ月シフト）"
+                >
+                  📅 前年同月
+                </button>
+                <button
+                  className="small"
+                  onClick={importTransfersFromPriorYearMonthlyAvg}
+                  style={{ background: '#0369a1' }}
+                  title="前年(FY2025) の各行（from→to ペア）の年合計 ÷ 12 を FY2026 の全月に均等に入れます"
+                >
+                  📊 前年月平均
+                </button>
+              </>
             )}
             <button className="small ghost" onClick={clearAll}>全クリア</button>
           </div>
@@ -1655,8 +1818,8 @@ function TransfersList() {
             入替した月以降、対象件数 × X円/日 × 計算日数 が累積で原価に加算されます。
           </div>
         </div>
-        <div className="form-grid" style={{ marginBottom: 12 }}>
-          <div>
+        <div style={{ display: 'flex', gap: 16, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 4 }}>
+          <div style={{ flex: '1 1 180px', minWidth: 160 }}>
             <label><span className="badge partner">運送店</span> デフォルト X（円/1件/日）</label>
             <input
               type="number"
@@ -1665,7 +1828,7 @@ function TransfersList() {
               onChange={(e) => setDefaultUplift('partner', Number(e.target.value) || 0)}
             />
           </div>
-          <div>
+          <div style={{ flex: '1 1 180px', minWidth: 160 }}>
             <label><span className="badge vendor">業者</span> デフォルト X（円/1件/日）</label>
             <input
               type="number"
@@ -1674,11 +1837,27 @@ function TransfersList() {
               onChange={(e) => setDefaultUplift('vendor', Number(e.target.value) || 0)}
             />
           </div>
-          <div className="row" style={{ justifyContent: 'flex-end', gap: 4, alignItems: 'flex-end' }}>
+          <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
             <button className="small ghost" onClick={() => clearMonthlyUplift('partner')}>運送店 月別クリア</button>
             <button className="small ghost" onClick={() => clearMonthlyUplift('vendor')}>業者 月別クリア</button>
           </div>
         </div>
+        {(() => {
+          const pr = plan.costUpliftCommissionRate?.partner ?? 0
+          const vr = plan.costUpliftCommissionRate?.vendor ?? 0
+          if (pr <= 0 && vr <= 0) return null
+          const effP = Math.round((plan.diagonalUplift.partner || 0) * (100 - pr) / 100)
+          const effV = Math.round((plan.diagonalUplift.vendor || 0) * (100 - vr) / 100)
+          return (
+            <div className="muted" style={{ fontSize: 11, margin: '4px 0 12px', padding: 6, background: '#fff', borderRadius: 4, border: '1px dashed #fcd34d' }}>
+              💡 実効原価（手数料控除後）:{' '}
+              {pr > 0 && <><strong>運送店</strong>: ¥{effP.toLocaleString()}/件/日（手数料 {pr}%）</>}
+              {pr > 0 && vr > 0 && '　／　'}
+              {vr > 0 && <><strong>業者</strong>: ¥{effV.toLocaleString()}/件/日（手数料 {vr}%）</>}
+              {pr > 0 && vr === 0 && <span style={{ marginLeft: 8 }}>業者: ¥{(plan.diagonalUplift.vendor || 0).toLocaleString()}/件/日（手数料なし）</span>}
+            </div>
+          )
+        })()}
         <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
           月別 uplift X（空欄はデフォルト値を使用）
         </div>
@@ -1750,8 +1929,8 @@ function TransfersList() {
                 ))}
                 <td></td>
               </tr>
-              <tr style={{ borderBottom: '2px solid #cbd5e1' }}>
-                <td><span className="badge partner">運送店</span> uplift 原価</td>
+              <tr>
+                <td><span className="badge partner">運送店</span> uplift 原価 <span className="muted" style={{ fontSize: 10 }}>（累計）</span></td>
                 {upliftSummary.map((r) => (
                   <td key={`xp-${r.month}`} className="mono" style={{ color: r.costP > 0 ? '#dc2626' : '#94a3b8' }}>
                     {r.costP > 0 ? `¥${yen(r.costP)}` : '—'}
@@ -1760,6 +1939,17 @@ function TransfersList() {
                 <td className="mono" style={{ background: '#f1f5f9', color: '#dc2626', fontWeight: 700 }}>
                   ¥{yen(upliftCostTotalP)}
                 </td>
+              </tr>
+              <tr style={{ borderBottom: '2px solid #cbd5e1' }}>
+                <td className="muted" style={{ fontSize: 11, paddingLeft: 20 }}>
+                  ↳ うち当月新規発生分 <span style={{ fontSize: 10 }}>（今月件数 × X × 営業日数）</span>
+                </td>
+                {upliftSummary.map((r) => (
+                  <td key={`np-${r.month}`} className="mono muted" style={{ fontSize: 11, color: r.newCostP > 0 ? '#94a3b8' : '#cbd5e1' }}>
+                    {r.newCostP > 0 ? `¥${yen(r.newCostP)}` : '—'}
+                  </td>
+                ))}
+                <td className="mono muted" style={{ background: '#f1f5f9', fontSize: 11 }}>¥{yen(upliftNewCostTotalP)}</td>
               </tr>
               <tr>
                 <td><span className="badge vendor">業者</span> 当月入替</td>
@@ -1780,7 +1970,7 @@ function TransfersList() {
                 <td></td>
               </tr>
               <tr>
-                <td><span className="badge vendor">業者</span> uplift 原価</td>
+                <td><span className="badge vendor">業者</span> uplift 原価 <span className="muted" style={{ fontSize: 10 }}>（累計）</span></td>
                 {upliftSummary.map((r) => (
                   <td key={`xv-${r.month}`} className="mono" style={{ color: r.costV > 0 ? '#dc2626' : '#94a3b8' }}>
                     {r.costV > 0 ? `¥${yen(r.costV)}` : '—'}
@@ -1789,6 +1979,17 @@ function TransfersList() {
                 <td className="mono" style={{ background: '#f1f5f9', color: '#dc2626', fontWeight: 700 }}>
                   ¥{yen(upliftCostTotalV)}
                 </td>
+              </tr>
+              <tr>
+                <td className="muted" style={{ fontSize: 11, paddingLeft: 20 }}>
+                  ↳ うち当月新規発生分 <span style={{ fontSize: 10 }}>（今月件数 × X × 営業日数）</span>
+                </td>
+                {upliftSummary.map((r) => (
+                  <td key={`nv-${r.month}`} className="mono muted" style={{ fontSize: 11, color: r.newCostV > 0 ? '#94a3b8' : '#cbd5e1' }}>
+                    {r.newCostV > 0 ? `¥${yen(r.newCostV)}` : '—'}
+                  </td>
+                ))}
+                <td className="mono muted" style={{ background: '#f1f5f9', fontSize: 11 }}>¥{yen(upliftNewCostTotalV)}</td>
               </tr>
               <tr style={{ background: '#fef2f2' }}>
                 <td><strong>uplift 原価合計</strong></td>
@@ -1802,6 +2003,131 @@ function TransfersList() {
                 })}
                 <td className="mono" style={{ background: '#fee2e2', color: '#dc2626', fontWeight: 700 }}>
                   ¥{yen(upliftCostTotalP + upliftCostTotalV)}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* === 構成比変動（非対角入替）による粗利インパクト === */}
+      <div className="card" style={{ background: '#eff6ff', borderColor: '#bfdbfe' }}>
+        <div className="row between" style={{ flexWrap: 'wrap', gap: 8 }}>
+          <h3 style={{ color: '#1e40af', margin: 0 }}>🔀 構成比変動による粗利インパクト（非対角入替）</h3>
+          <div className="muted" style={{ fontSize: 12 }}>
+            累計件数 × (from原価 − to原価) × 営業日数。+は粗利UP（低原価カテゴリへ移動）、−は粗利DOWN。
+          </div>
+        </div>
+        <div className="scroll-x" style={{ marginTop: 8 }}>
+          <table>
+            <thead>
+              <tr>
+                <th>カテゴリ移動</th>
+                <th>粗利影響/件/日</th>
+                {months.map((m) => <th key={`mix-th-${m}`}>{formatYmShort(m)}</th>)}
+                <th style={{ background: '#e2e8f0' }}>年計</th>
+              </tr>
+            </thead>
+            <tbody>
+              {mixImpact.map(({ pair, perCaseDay, monthly, total }) => {
+                const hasAny = monthly.some((r) => r.count > 0)
+                if (!hasAny) return null
+                return (
+                  <tr key={`mix-${pair.from}-${pair.to}`}>
+                    <td>
+                      <span className={`badge ${pair.from}`}>{WorkerCategoryLabels[pair.from]}</span>
+                      <span className="muted" style={{ margin: '0 4px' }}>→</span>
+                      <span className={`badge ${pair.to}`}>{WorkerCategoryLabels[pair.to]}</span>
+                    </td>
+                    <td className="mono" style={{ color: perCaseDay >= 0 ? '#16a34a' : '#dc2626' }}>
+                      {perCaseDay >= 0 ? '+' : ''}¥{Math.round(perCaseDay).toLocaleString()}
+                    </td>
+                    {monthly.map((cell) => (
+                      <td key={`mix-${pair.from}-${pair.to}-${cell.month}`} className="mono" style={{ color: cell.profit > 0 ? '#16a34a' : cell.profit < 0 ? '#dc2626' : '#94a3b8' }}>
+                        {cell.profit === 0 ? '—' : `${cell.profit > 0 ? '+' : '−'}¥${yen(Math.abs(cell.profit))}`}
+                      </td>
+                    ))}
+                    <td className="mono" style={{ background: '#f1f5f9', fontWeight: 700, color: total > 0 ? '#16a34a' : total < 0 ? '#dc2626' : undefined }}>
+                      {total === 0 ? '—' : `${total > 0 ? '+' : '−'}¥${yen(Math.abs(total))}`}
+                    </td>
+                  </tr>
+                )
+              })}
+              <tr style={{ background: '#dbeafe' }}>
+                <td colSpan={2}><strong>構成比変動 合計</strong></td>
+                {mixImpactMonthly.map((v, i) => (
+                  <td key={`mix-sum-${i}`} className="mono" style={{ fontWeight: 700, color: v > 0 ? '#16a34a' : v < 0 ? '#dc2626' : undefined }}>
+                    {v === 0 ? '—' : `${v > 0 ? '+' : '−'}¥${yen(Math.abs(v))}`}
+                  </td>
+                ))}
+                <td className="mono" style={{ background: '#bfdbfe', fontWeight: 800, color: mixImpactYearTotal > 0 ? '#16a34a' : mixImpactYearTotal < 0 ? '#dc2626' : undefined }}>
+                  {mixImpactYearTotal === 0 ? '—' : `${mixImpactYearTotal > 0 ? '+' : '−'}¥${yen(Math.abs(mixImpactYearTotal))}`}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
+          ※ 原価/件/日 はカテゴリ設定の原価率（×{' '}
+          <span className={`badge partner`} style={{ fontSize: 10 }}>運送店</span>
+          {' '}= {(plan.categories.partner.costRate || 0).toFixed(1)}% / {' '}
+          <span className={`badge vendor`} style={{ fontSize: 10 }}>業者</span>
+          {' '}= {(plan.categories.vendor.costRate || 0).toFixed(1)}% / {' '}
+          <span className={`badge employment`} style={{ fontSize: 10 }}>社員</span>
+          {' '}= {(plan.categories.employment.costRate || 0).toFixed(1)}% ）× 案件単価 ¥{(plan.revenuePerCase || 0).toLocaleString()} から算出
+        </div>
+      </div>
+
+      {/* === 入替 合計 粗利インパクト（構成比変動 − 同区分 uplift） === */}
+      <div className="card" style={{ background: '#faf5ff', borderColor: '#d8b4fe' }}>
+        <h3 style={{ color: '#6b21a8', margin: 0 }}>💎 入替 合計 粗利インパクト（年間 {totalImpactYear > 0 ? '+' : ''}¥{(totalImpactYear / 1_000_000).toFixed(1)}M）</h3>
+        <div className="muted" style={{ fontSize: 12, marginTop: 4, marginBottom: 10 }}>
+          非対角（構成比変動）と同区分（単価uplift）の粗利インパクトを合算。uplift は原価増なので符号は − 寄り。
+        </div>
+        <div className="scroll-x">
+          <table>
+            <thead>
+              <tr>
+                <th>項目</th>
+                {months.map((m) => <th key={`ti-th-${m}`}>{formatYmShort(m)}</th>)}
+                <th style={{ background: '#e2e8f0' }}>年計</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>構成比変動 Pt <span className="muted" style={{ fontSize: 10 }}>（非対角）</span></td>
+                {mixImpactMonthly.map((v, i) => (
+                  <td key={`ti-mix-${i}`} className="mono" style={{ color: v > 0 ? '#16a34a' : v < 0 ? '#dc2626' : undefined }}>
+                    {v === 0 ? '—' : `${v > 0 ? '+' : '−'}¥${yen(Math.abs(v))}`}
+                  </td>
+                ))}
+                <td className="mono" style={{ background: '#f1f5f9', fontWeight: 700, color: mixImpactYearTotal >= 0 ? '#16a34a' : '#dc2626' }}>
+                  {mixImpactYearTotal >= 0 ? '+' : '−'}¥{yen(Math.abs(mixImpactYearTotal))}
+                </td>
+              </tr>
+              <tr>
+                <td>同区分 uplift Pt <span className="muted" style={{ fontSize: 10 }}>（対角・累計、原価増=−）</span></td>
+                {upliftSummary.map((r, i) => {
+                  const neg = -(r.costP + r.costV)
+                  return (
+                    <td key={`ti-up-${i}`} className="mono" style={{ color: neg < 0 ? '#dc2626' : '#94a3b8' }}>
+                      {neg === 0 ? '—' : `${neg > 0 ? '+' : '−'}¥${yen(Math.abs(neg))}`}
+                    </td>
+                  )
+                })}
+                <td className="mono" style={{ background: '#f1f5f9', fontWeight: 700, color: '#dc2626' }}>
+                  −¥{yen(upliftCostTotalP + upliftCostTotalV)}
+                </td>
+              </tr>
+              <tr style={{ background: '#f3e8ff' }}>
+                <td><strong>合計 粗利インパクト</strong></td>
+                {totalImpactMonthly.map((v, i) => (
+                  <td key={`ti-total-${i}`} className="mono" style={{ fontWeight: 700, color: v > 0 ? '#16a34a' : v < 0 ? '#dc2626' : undefined }}>
+                    {v === 0 ? '—' : `${v > 0 ? '+' : '−'}¥${yen(Math.abs(v))}`}
+                  </td>
+                ))}
+                <td className="mono" style={{ background: '#e9d5ff', fontWeight: 800, color: totalImpactYear > 0 ? '#16a34a' : totalImpactYear < 0 ? '#dc2626' : undefined }}>
+                  {totalImpactYear === 0 ? '—' : `${totalImpactYear > 0 ? '+' : '−'}¥${yen(Math.abs(totalImpactYear))}`}
                 </td>
               </tr>
             </tbody>
@@ -2361,11 +2687,15 @@ function CostRevisionsList() {
     setPlan((p) => ({ ...p, costRevisions: p.costRevisions.filter((x) => x.category !== cat) }))
   }
 
-  // 月次累積原価影響を各月で集計
+  // カテゴリ別 手数料率（原価改定の実効額計算に使用）
+  const commissionOf = (cat: WorkerCategory) => plan.costUpliftCommissionRate?.[cat] ?? 0
+  const factorOf = (cat: WorkerCategory) => (100 - commissionOf(cat)) / 100
+
+  // 月次累積原価影響を各月で集計（手数料控除後の実効額で集計）
   const monthlyImpacts = months.map((m) => {
     let total = 0
     for (const cr of plan.costRevisions ?? []) {
-      if (cr.effectiveMonth <= m) total += cr.count * cr.amountPerCaseDay * 20  // 20日平均
+      if (cr.effectiveMonth <= m) total += cr.count * cr.amountPerCaseDay * factorOf(cr.category) * 20  // 20日平均
     }
     return total
   })
@@ -2383,6 +2713,14 @@ function CostRevisionsList() {
             各月のセルに <strong>件数</strong> と <strong>+円/件/日</strong> を入力。入力月以降、原価が継続的に加算されます（cumulative）。
             例: 業者 6月に 10件 × +500円 → 6月〜3月 の毎月が +10×500×営業日数 の原価増。
           </div>
+          {(commissionOf('partner') > 0 || commissionOf('vendor') > 0) && (
+            <div className="muted" style={{ fontSize: 11, marginTop: 6, padding: '6px 10px', background: '#fef3c7', border: '1px dashed #fcd34d', borderRadius: 4 }}>
+              💡 手数料率が設定されています。入力額 × (100 − 手数料%) が<strong>実効原価増</strong>として計上されます:{' '}
+              {commissionOf('partner') > 0 && <><strong>運送店</strong> 手数料 {commissionOf('partner')}% (入力1000 → 実効{Math.round(1000 * factorOf('partner'))}円)</>}
+              {commissionOf('partner') > 0 && commissionOf('vendor') > 0 && ' ／ '}
+              {commissionOf('vendor') > 0 && <><strong>業者</strong> 手数料 {commissionOf('vendor')}% (入力1000 → 実効{Math.round(1000 * factorOf('vendor'))}円)</>}
+            </div>
+          )}
         </div>
         <button className="small ghost" onClick={clearAll}>全クリア</button>
       </div>

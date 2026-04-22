@@ -17,14 +17,25 @@ import { usePlanStore } from '../store'
 import { WorkerCategoryLabels, WorkerCategoryOrder } from '../types'
 import type { Plan } from '../types'
 import {
+  ALL_TRANSFER_PAIRS,
   budgetProfitOf,
   budgetRevenueOf,
   computeMarginBridge,
   computeMonthly,
   computePriorYearMarginBridge,
   computePriorYearMonthlySeries,
+  costUpliftFactor,
+  cumulativeDiagonalCount,
+  cumulativeNonDiagonalCount,
+  cumulativePriceIncreaseAt,
+  effectiveAcquisitionBasePrice,
+  effectiveAcquisitionUnitPrice,
+  effectiveDiagonalUpliftAt,
+  effectiveTerminationBasePrice,
+  effectiveTerminationUnitPrice,
   estimatePriorYearLastMonthUnitPrice,
   meisterCostSavingAt,
+  nonDiagonalProfitPerCasePerDay,
   percent,
   priorYm,
   workingDaysOf,
@@ -586,6 +597,9 @@ export default function Dashboard() {
           label={`${currentFY} 売上計画`}
           value={`¥${yen(totalRevenue)}`}
           budget={hasBudget ? `¥${yen(budgetRevTotal)}` : undefined}
+          budgetVsPrior={hasBudget && budgetRevTotal > 0 && priorRevTotal > 0
+            ? { budgetNum: budgetRevTotal, priorNum: priorRevTotal, label: `予算 vs ${priorFY}`, formatM: true }
+            : undefined}
           rate={hasBudget && budgetRevTotal > 0 ? totalRevenue / budgetRevTotal : undefined}
           gap={hasBudget ? revGap : undefined}
           extraSub={totalMeister > 0 ? `案件プール売上（マイスター ¥${yen(totalMeister)} は代走分で内数）` : undefined}
@@ -594,6 +608,9 @@ export default function Dashboard() {
           label={`${currentFY} 粗利計画（含マイスター効果）`}
           value={`¥${yen(totalProfit)}`}
           budget={hasBudget && budgetProfitTotal !== 0 ? `¥${yen(budgetProfitTotal)}` : undefined}
+          budgetVsPrior={hasBudget && budgetProfitTotal > 0 && priorProfitTotal > 0
+            ? { budgetNum: budgetProfitTotal, priorNum: priorProfitTotal, label: `予算 vs ${priorFY}`, formatM: true }
+            : undefined}
           rate={hasBudget && budgetProfitTotal !== 0 ? totalProfit / budgetProfitTotal : undefined}
           gap={hasBudget && budgetProfitTotal !== 0 ? profitGap : undefined}
           extraSub={totalMeisterCostSaving > 0 ? `運営粗利 ¥${yen(totalOpsProfit)} + マイスター原価減 ¥${yen(totalMeisterCostSaving)}` : undefined}
@@ -1794,6 +1811,7 @@ function MarginBridgeSection({
 /** 構造化KPI（計画合計 / 予算 / 対予算比 / 差額） */
 function KpiStructured({
   label, value, budget, budgetLabel, rate, rateLabel, gap, gapText, gapColor, gapUnit, extraSub,
+  budgetVsPrior,
 }: {
   label: string
   value: string
@@ -1808,11 +1826,24 @@ function KpiStructured({
   gapUnit?: string
   /** 追加の sub 情報（例: 運営＋マイスター内訳） */
   extraSub?: string
+  /** 予算 vs 前年実績 の比較（予算を分子、前年を分母）。色は予算行と同じ muted 系で表示。 */
+  budgetVsPrior?: { budgetNum: number; priorNum: number; label?: string; formatM?: boolean }
 }) {
   const ratePct = rate != null ? rate * 100 : null
   const rateColorDefault = ratePct != null ? (ratePct >= 100 ? '#16a34a' : '#dc2626') : '#64748b'
   const gapDisplay = gapText ?? (gap != null ? `${gap >= 0 ? '+' : ''}¥${yen(gap)}${gapUnit ?? ''}` : undefined)
   const gapColorFinal = gapColor ?? (gap != null ? (gap >= 0 ? '#16a34a' : '#dc2626') : '#64748b')
+
+  let budgetVsPriorText: string | null = null
+  if (budgetVsPrior && budgetVsPrior.priorNum > 0 && budgetVsPrior.budgetNum > 0) {
+    const delta = budgetVsPrior.budgetNum - budgetVsPrior.priorNum
+    const pct = (budgetVsPrior.budgetNum / budgetVsPrior.priorNum) * 100
+    const deltaText = budgetVsPrior.formatM
+      ? `${delta >= 0 ? '+' : ''}¥${(delta / 1_000_000).toFixed(1)}M`
+      : `${delta >= 0 ? '+' : ''}¥${yen(delta)}`
+    budgetVsPriorText = `${budgetVsPrior.label ?? 'vs 前年'}: ${pct.toFixed(1)}% / ${deltaText}`
+  }
+
   return (
     <div className="kpi">
       <div className="label">{label}</div>
@@ -1820,6 +1851,11 @@ function KpiStructured({
       {budget && (
         <div className="sub" style={{ fontSize: 11, marginTop: 2 }}>
           {budgetLabel ?? '予算'}: {budget}
+        </div>
+      )}
+      {budgetVsPriorText && (
+        <div className="sub" style={{ fontSize: 11, marginTop: 1 }}>
+          {budgetVsPriorText}
         </div>
       )}
       {ratePct != null && (
@@ -1882,13 +1918,12 @@ function ParamCardsRow({
   const priorNet = priorAcq - priorTerm
   const priorMeister = py ? py.monthlyData.reduce((s, d) => s + (d.meisterRevenue ?? 0), 0) : 0
 
-  // 獲得単価
-  const priorAcqUnit = py?.annualSummary?.acquisitionUnitPrice ?? plan.cohortPricing?.priorAcquisitionUnitPrice ?? 0
-  const acqUnitAdj = (plan.cohortPricing?.acquisitionUnitPriceUpAbs ?? 0)
-    + (priorAcqUnit * (plan.cohortPricing?.acquisitionUnitPriceUpPct ?? 0)) / 100
-  const currentAcqUnit = priorAcqUnit + acqUnitAdj
-  // 終了単価（FY2025 実績のみ、FY2026 は仮に revenuePerCase と仮定）
-  const priorTermUnit = py?.annualSummary?.terminationUnitPrice ?? 0
+  // 獲得単価（前年ベース + 調整 モデル。case 明細があれば自動導出、無ければ annualSummary or 手動値にフォールバック）
+  const priorAcqUnit = Math.round(effectiveAcquisitionBasePrice(plan))
+  const currentAcqUnit = Math.round(effectiveAcquisitionUnitPrice(plan))
+  const acqUnitAdj = currentAcqUnit - priorAcqUnit
+  // 終了単価 前年ベース（参考値表示用）
+  const priorTermUnit = Math.round(effectiveTerminationBasePrice(plan))
 
   // 案件単価（プール）
   const currentRevPC = plan.revenuePerCase
@@ -1900,8 +1935,35 @@ function ParamCardsRow({
   const currentTransfers = plan.transfers.reduce((s, t) => (t.from !== t.to ? s + t.count : s), 0)
   const priorTransfers = py ? py.transfers.reduce((s, t) => (t.from !== t.to ? s + t.count : s), 0) : 0
 
+  // 入替 粗利インパクト（年間合計）
+  //   構成比変動（非対角）= Σ per pair: cum_count(m) × (cost_from - cost_to) × days(m) for each month m
+  //   同区分uplift（対角・累計コスト、原価増=負の粗利）
+  const monthsForImpact = monthsRange(plan.baseMonth, plan.horizonMonths)
+  let mixImpactYear = 0
+  let diagImpactYear = 0
+  for (const m of monthsForImpact) {
+    const days = workingDaysOf(plan, m)
+    // 非対角
+    for (const pair of ALL_TRANSFER_PAIRS) {
+      if (pair.from === pair.to) continue
+      const cum = cumulativeNonDiagonalCount(plan.transfers, m, pair.from, pair.to)
+      if (cum <= 0) continue
+      const unit = nonDiagonalProfitPerCasePerDay(plan, pair.from, pair.to, m)
+      mixImpactYear += cum * unit * days
+    }
+    // 対角 uplift（手数料控除後の実効額、原価増＝粗利マイナス）
+    const cumP = cumulativeDiagonalCount(plan.transfers, m, 'partner')
+    const cumV = cumulativeDiagonalCount(plan.transfers, m, 'vendor')
+    const xp = effectiveDiagonalUpliftAt(plan, m, 'partner') * costUpliftFactor(plan, 'partner')
+    const xv = effectiveDiagonalUpliftAt(plan, m, 'vendor') * costUpliftFactor(plan, 'vendor')
+    diagImpactYear += cumP * xp * days + cumV * xv * days
+  }
+  mixImpactYear = Math.round(mixImpactYear)
+  diagImpactYear = Math.round(diagImpactYear)
+  const totalTransferImpact = mixImpactYear - diagImpactYear  // mix は既に符号付き、uplift は原価増なので引く
+
   // 改定 年間累積影響（20日換算） 単価改定=売上増 / 原価改定=原価増
-  const months = monthsRange(plan.baseMonth, plan.horizonMonths)
+  const months = monthsForImpact
   let priceRevYearly = 0
   for (const pr of plan.priceRevisions ?? []) {
     const remain = months.filter((m) => m >= pr.effectiveMonth).length
@@ -1915,6 +1977,21 @@ function ParamCardsRow({
   }
   const revisionNetProfit = priceRevYearly - costRevYearly
   const hasRevision = priceRevYearly > 0 || costRevYearly > 0
+
+  // 単価アップ 年間累積（cumulativePriceIncreaseAt で月次の累計売上/粗利を 12ヶ月積算）
+  let priceUpMarchRevenue = 0   // 3月時点の累計売上アップ額（毎月この金額が立っている）
+  let priceUpYearlyRevenue = 0
+  let priceUpYearlyProfit = 0
+  for (const m of monthsForImpact) {
+    const cum = cumulativePriceIncreaseAt(plan, m)
+    priceUpYearlyRevenue += cum.revenue
+    priceUpYearlyProfit += cum.profit
+  }
+  {
+    const lastMonth = monthsForImpact[monthsForImpact.length - 1] ?? plan.baseMonth
+    priceUpMarchRevenue = cumulativePriceIncreaseAt(plan, lastMonth).revenue
+  }
+  const hasPriceUp = (plan.priceIncreases ?? []).length > 0
 
   // 原価率（2026-03 snapshot）— 運送店 / 業者 / 社員
   const catRate = {
@@ -1993,11 +2070,32 @@ function ParamCardsRow({
           anchor="unit-price-card"
         />
         <LinkCard
-          title="終了単価 (参考)"
-          value={hasPriorYear ? `¥${priorTermUnit.toLocaleString()}` : '—'}
-          sub="FY2025 実績ベース"
+          title="終了単価 (計画)"
+          value={(() => {
+            const eff = effectiveTerminationUnitPrice(plan)
+            return eff > 0 ? `¥${Math.round(eff).toLocaleString()}` : '—'
+          })()}
+          sub={(() => {
+            const base = effectiveTerminationBasePrice(plan)
+            const eff = effectiveTerminationUnitPrice(plan)
+            const override = (plan.cohortPricing?.terminationUnitPrice ?? 0) > 0
+            if (override) {
+              const adj = Math.round(eff) - Math.round(base)
+              return `前年 ¥${Math.round(base).toLocaleString()}（手動 override${adj !== 0 ? ` ${adj >= 0 ? '+' : '−'}¥${Math.abs(adj).toLocaleString()}` : ''}）`
+            }
+            const adj = Math.round(eff) - Math.round(base)
+            return `前年 ¥${Math.round(base).toLocaleString()}${adj !== 0 ? ` + 調整 ${adj >= 0 ? '+' : '−'}¥${Math.abs(adj).toLocaleString()}` : ''}`
+          })()}
+          delta={(() => {
+            // 前年比 = FY2026 計画値 − 前年ベース（＝調整ぶん）
+            const eff = effectiveTerminationUnitPrice(plan)
+            const base = effectiveTerminationBasePrice(plan)
+            return eff > 0 && base > 0 ? Math.round(eff) - Math.round(base) : undefined
+          })()}
+          deltaUnit="円"
           color="#64748b"
-          to="priorYear"
+          to="categories"
+          anchor="cohort-pricing-card"
         />
         <LinkCard
           title="マイスター (年間)"
@@ -2015,14 +2113,29 @@ function ParamCardsRow({
           subTab="meister"
         />
         <LinkCard
-          title="入替 (年間・非対角)"
-          value={`${currentTransfers.toLocaleString()}件`}
-          sub={hasPriorYear ? `前年 ${priorTransfers.toLocaleString()}件` : undefined}
+          title="入替 (年間)"
+          value={`${currentTransfers.toLocaleString()}件 (非対角)`}
+          sub={(() => {
+            const fm = (x: number) => `${x >= 0 ? '+' : '−'}¥${(Math.abs(x) / 1_000_000).toFixed(1)}M`
+            return `構成比 ${fm(mixImpactYear)} ／ 同区分 ${fm(-diagImpactYear)} ／ 合計 ${fm(totalTransferImpact)}`
+          })()}
           delta={hasPriorYear ? currentTransfers - priorTransfers : undefined}
           deltaUnit="件"
           color="#9333ea"
           to="events"
           subTab="transfer"
+        />
+        <LinkCard
+          title="単価アップ (3月時点)"
+          value={hasPriceUp
+            ? `¥${(priceUpMarchRevenue / 1_000_000).toFixed(1)}M`
+            : '—'}
+          sub={hasPriceUp
+            ? `年間合計: 売上UP +¥${(priceUpYearlyRevenue / 1_000_000).toFixed(1)}M／粗利UP +¥${(priceUpYearlyProfit / 1_000_000).toFixed(1)}M`
+            : '未設定'}
+          color="#0ea5e9"
+          to="events"
+          subTab="priceup"
         />
         <LinkCard
           title="改定 年間影響（20日換算）"

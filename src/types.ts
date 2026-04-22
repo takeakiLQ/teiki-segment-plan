@@ -47,14 +47,27 @@ export interface MonthlyTotal {
  *  獲得コホートのみ前年獲得をベースに調整。
  */
 export interface CohortPricing {
-  /** 前年（FY2025）獲得案件の平均単価（円/1件/日） */
+  /** 前年（FY2025）獲得案件の平均単価（円/1件/日）— 手動オーバーライド値。
+   *  案件明細 (priorYear.cases) がロードされていれば明細から自動導出された値を優先。
+   *  手動値を残したい場合のみセットする。 */
   priorAcquisitionUnitPrice: number
   /** FY2026 獲得単価の調整（絶対額 円/日） */
   acquisitionUnitPriceUpAbs: number
-  /** FY2026 獲得単価の調整（%）— 絶対額と合算 */
+  /** FY2026 獲得単価の調整（%）— base に対するパーセント */
   acquisitionUnitPriceUpPct: number
   /** セグメント別 1案件1日あたり 粗利UP額（円） */
   acquisitionProfitUplift: CategoryMap<number>
+
+  /** FY2026 終了単価の手動オーバーライド（円/1件/日）。
+   *  セットされていれば最優先。0 / 未設定なら baseline + 調整から計算される。 */
+  terminationUnitPrice?: number
+  /** 終了単価の調整（絶対額 円/日） */
+  terminationUnitPriceAdjAbs?: number
+  /** 終了単価の調整（%）— base に対するパーセント */
+  terminationUnitPriceAdjPct?: number
+  /** 前年終了単価の手動オーバーライド（円/1件/日）。
+   *  案件明細があれば明細から自動導出される値を優先。 */
+  priorTerminationUnitPrice?: number
 }
 
 /** 単価アップ（累積型・還元率付き）
@@ -181,6 +194,11 @@ export interface Plan {
   diagonalUplift: DiagonalUplift
   /** 同区分入替 原価引き上げ額の月別上書き */
   diagonalUpliftByMonth: MonthlyDiagonalUpliftOverride[]
+  /** 原価改定・同区分uplift への手数料率（%）。
+   *  ユーザー入力額 × (100 - commission)/100 が実効原価増として計上される。
+   *  例: 運送店=18 → 入力1000円/件/日 は実効820円、業者=0 → そのまま1000円。
+   *  省略時は全カテゴリ 0（既存データ互換：入力額そのまま）。 */
+  costUpliftCommissionRate?: CategoryMap<number>
   /** 月次マイスター売上（yyyy-mm → 円）。案件プール内の「マイスター代走分」を表す。
    *  0%原価で、代走先カテゴリの原価率ぶんだけ原価を削減する（粗利増）。売上自体は不変。 */
   meisterRevenueByMonth: Record<string, number>
@@ -257,6 +275,40 @@ export interface PriorYearAnnualSummary {
   terminationMarginPct?: number
 }
 
+/** 案件単位の明細データ（獲得／終了）。
+ *  SF_ID で Salesforce 側にドリルダウン可能 */
+export interface PriorYearCaseDetail {
+  kind: 'acq' | 'term'
+  sfId?: string
+  /** 計画月 yyyy-mm（終了は稼働終了日+1月シフト済み） */
+  planMonth: string
+  segment?: 'teiki' | 'urban'
+  hq?: string
+  branch?: string
+  customer?: string
+  industry?: string
+  cargo?: string
+  vehicle?: string
+  vehicleType?: string
+  /** メイン／サブ区分 */
+  mainSub?: string
+  longShort?: string
+  caseType?: string
+  ptCategory: WorkerCategory | 'unknown'
+  contractUnitPrice?: number
+  plannedWorkDays?: number
+  plannedRevenue?: number
+  plannedCost?: number
+  plannedGP?: number
+  workStart?: string
+  workEnd?: string
+  endReason?: string
+  /** 1日あたり稼働時間（時間）。未設定なら Plan 側の想定稼働時間/日にフォールバック。
+   *  CSV に時間情報がないので通常は undefined。明示的に入れたい場合に使う。 */
+  workingHoursPerDay?: number
+  memo?: string
+}
+
 /** 前年実績プラン */
 export interface PriorYearPlan {
   /** 会計年度ラベル 例 "FY2025" */
@@ -278,6 +330,14 @@ export interface PriorYearPlan {
   diagonalUpliftByMonth: MonthlyDiagonalUpliftOverride[]
   /** 年次集計サマリー（オプション・参考値） */
   annualSummary?: PriorYearAnnualSummary
+  /** 案件単位の明細（獲得・終了）。
+   *  SF_ID リンクで Salesforce 側にドリルダウン可能。計算には影響しない（情報表示専用）。 */
+  cases?: PriorYearCaseDetail[]
+  /** SF リンクテンプレート（{sfId} を置換） */
+  sfLinkTemplate?: string
+  /** 想定 稼働時間/日（時間単価 算出用のグローバル想定値。既定 8h）。
+   *  ケース毎の `workingHoursPerDay` が指定されていればそちらを優先。 */
+  assumedWorkingHoursPerDay?: number
 }
 
 // 計算結果

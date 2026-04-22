@@ -73,6 +73,7 @@ export function createEmptyPlan(name = 'メイン計画'): Plan {
     defaultWorkingDays: 20,
     diagonalUplift: { partner: 0, vendor: 0 },
     diagonalUpliftByMonth: [],
+    costUpliftCommissionRate: { partner: 0, vendor: 0, employment: 0 },
     meisterRevenueByMonth: {},
     meisterAllocation: { partner: 100, vendor: 0, employment: 0 },
     priceIncreases: [],
@@ -81,6 +82,7 @@ export function createEmptyPlan(name = 'メイン計画'): Plan {
       acquisitionUnitPriceUpAbs: 0,
       acquisitionUnitPriceUpPct: 0,
       acquisitionProfitUplift: { partner: 0, vendor: 0, employment: 0 },
+      terminationUnitPrice: 0,
     },
     budget: {
       revenue: 0,
@@ -217,6 +219,14 @@ function migratePlan(plan: any): Plan {
     if (typeof plan.diagonalUplift.vendor !== 'number' || plan.diagonalUplift.vendor < 0) plan.diagonalUplift.vendor = 0
   }
   if (!Array.isArray(plan.diagonalUpliftByMonth)) plan.diagonalUpliftByMonth = []
+  if (!plan.costUpliftCommissionRate || typeof plan.costUpliftCommissionRate !== 'object') {
+    plan.costUpliftCommissionRate = { partner: 0, vendor: 0, employment: 0 }
+  } else {
+    for (const cat of ['partner', 'vendor', 'employment'] as const) {
+      const v = plan.costUpliftCommissionRate[cat]
+      if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v >= 100) plan.costUpliftCommissionRate[cat] = 0
+    }
+  }
   if (!plan.meisterRevenueByMonth || typeof plan.meisterRevenueByMonth !== 'object') {
     plan.meisterRevenueByMonth = {}
   }
@@ -250,11 +260,16 @@ function migratePlan(plan: any): Plan {
       if (typeof u.vendor !== 'number') u.vendor = 0
       if (typeof u.employment !== 'number') u.employment = 0
     }
+    if (typeof cp.terminationUnitPrice !== 'number' || cp.terminationUnitPrice < 0) cp.terminationUnitPrice = 0
+    if (typeof cp.terminationUnitPriceAdjAbs !== 'number' || !Number.isFinite(cp.terminationUnitPriceAdjAbs)) cp.terminationUnitPriceAdjAbs = 0
+    if (typeof cp.terminationUnitPriceAdjPct !== 'number' || !Number.isFinite(cp.terminationUnitPriceAdjPct)) cp.terminationUnitPriceAdjPct = 0
+    if (typeof cp.priorTerminationUnitPrice !== 'number' || cp.priorTerminationUnitPrice < 0) cp.priorTerminationUnitPrice = 0
   }
 
   if (plan.priorYear) {
     if (!plan.priorYear.workingDaysByMonth || typeof plan.priorYear.workingDaysByMonth !== 'object') plan.priorYear.workingDaysByMonth = {}
     if (typeof plan.priorYear.defaultWorkingDays !== 'number' || plan.priorYear.defaultWorkingDays <= 0) plan.priorYear.defaultWorkingDays = 20
+    if (plan.priorYear.cases !== undefined && !Array.isArray(plan.priorYear.cases)) plan.priorYear.cases = []
     if (!plan.priorYear.diagonalUplift || typeof plan.priorYear.diagonalUplift !== 'object') {
       plan.priorYear.diagonalUplift = { partner: 0, vendor: 0 }
     } else {
@@ -289,6 +304,20 @@ function saveLocal(uid: string | null, plan: Plan, bu: BusinessUnit) {
   }
 }
 
+/**
+ * Firestore 保存戦略:
+ *   - main plan  = users/{uid}/plans/{bu}        (cases を除いた本体)
+ *   - cases doc  = users/{uid}/plans/{bu}-cases  (priorYear.cases 専用。1MB 制限対策)
+ *   - もし cases doc 自体が 1MB 超える場合は複数チャンクに分割（chunkIndex, chunkTotal）
+ *   ※ Firestore 1 ドキュメント 1MB 制限のため plan に cases を含めると teiki は超える
+ */
+const CASES_CHUNK_SIZE = 500  // 1チャンクあたりの件数
+
+function casesDocId(bu: BusinessUnit, chunkIdx?: number): string {
+  const base = `${firestoreDocId(bu)}-cases`
+  return chunkIdx === undefined ? base : `${base}-${chunkIdx}`
+}
+
 async function fetchCloudPlan(uid: string, bu: BusinessUnit): Promise<Plan | null> {
   if (!firebaseReady || !db) return null
   try {
@@ -300,11 +329,101 @@ async function fetchCloudPlan(uid: string, bu: BusinessUnit): Promise<Plan | nul
       console.warn(`[teiki-plan] (${bu}) Firestore に旧スキーマが残っています。`)
       return null
     }
-    return migratePlan(data)
+    const plan = migratePlan(data)
+    // cases を別ドキュメントから取得してマージ
+    const cases = await fetchCloudCases(uid, bu)
+    if (cases.length > 0 && plan.priorYear) {
+      plan.priorYear.cases = cases
+    }
+    return plan
   } catch (e) {
     console.warn(`[teiki-plan] (${bu}) Firestore load failed`, e)
     return null
   }
+}
+
+/** 案件明細を cases doc または cases-chunk から集約して取得。
+ *  ※ チャンク保存時はインデックス doc に `_chunkTotal` があり `cases: []`（空）なので、
+ *     チャンク総数を先に確認して > 0 ならチャンク doc を集約する。 */
+async function fetchCloudCases(uid: string, bu: BusinessUnit): Promise<any[]> {
+  if (!firebaseReady || !db) return []
+  try {
+    const indexRef = doc(db, 'users', uid, 'plans', casesDocId(bu))
+    const snap = await getDoc(indexRef)
+    if (!snap.exists()) return []
+    const data = snap.data() as any
+    // チャンク保存されている場合は総数を見てチャンク doc から集約
+    if (typeof data._chunkTotal === 'number' && data._chunkTotal > 0) {
+      return await fetchChunkedCases(uid, bu, data._chunkTotal)
+    }
+    // 単一 doc 保存された場合は cases を直接返す
+    if (Array.isArray(data.cases)) return data.cases
+    return []
+  } catch (e) {
+    console.warn(`[teiki-plan] (${bu}) cases load failed`, e)
+    return []
+  }
+}
+
+async function fetchChunkedCases(uid: string, bu: BusinessUnit, total: number): Promise<any[]> {
+  if (!firebaseReady || !db) return []
+  const promises = []
+  for (let i = 0; i < total; i++) {
+    promises.push(getDoc(doc(db!, 'users', uid, 'plans', casesDocId(bu, i))))
+  }
+  const snaps = await Promise.all(promises)
+  const out: any[] = []
+  for (const s of snaps) {
+    if (s.exists()) {
+      const d = s.data() as any
+      if (Array.isArray(d.cases)) out.push(...d.cases)
+    }
+  }
+  return out
+}
+
+/** 案件明細を Firestore に保存。1MB を超えそうならチャンク分割。 */
+async function saveCloudCases(uid: string, bu: BusinessUnit, cases: any[] | undefined): Promise<{ mode: 'empty' | 'single' | 'chunked'; count: number; chunks?: number }> {
+  if (!firebaseReady || !db) return { mode: 'empty', count: 0 }
+  const arr = Array.isArray(cases) ? cases : []
+
+  // 既存のチャンクを把握するために、index docに _chunkTotal が入っている可能性
+  // 簡便のため: cases を 空配列でクリア or チャンク更新のみ対応
+
+  if (arr.length === 0) {
+    // クリア: index doc を空で上書き（後続 fetch で 0件）
+    const indexRef = doc(db, 'users', uid, 'plans', casesDocId(bu))
+    await setDoc(indexRef, { cases: [], _chunkTotal: 0, updatedAt: new Date().toISOString() })
+    return { mode: 'empty', count: 0 }
+  }
+
+  // ざっくりサイズ推定: 1件あたり ~400-600 bytes と仮定。500件で ~300KB 想定 → 1MB 以下
+  const needsChunk = arr.length > CASES_CHUNK_SIZE
+  if (!needsChunk) {
+    // 単一ドキュメントに保存
+    try {
+      const singleRef = doc(db, 'users', uid, 'plans', casesDocId(bu))
+      await setDoc(singleRef, { cases: arr, _chunkTotal: 0, updatedAt: new Date().toISOString() })
+      return { mode: 'single', count: arr.length }
+    } catch (e: any) {
+      // サイズ超過などで失敗 → チャンクに fallback
+      console.warn(`[teiki-plan] (${bu}) single cases save failed, fallback to chunked:`, e?.message)
+    }
+  }
+
+  // チャンク分割保存
+  const chunks: any[][] = []
+  for (let i = 0; i < arr.length; i += CASES_CHUNK_SIZE) {
+    chunks.push(arr.slice(i, i + CASES_CHUNK_SIZE))
+  }
+  // インデックス doc は軽量（チャンク総数のみ）
+  const indexRef = doc(db, 'users', uid, 'plans', casesDocId(bu))
+  await setDoc(indexRef, { _chunkTotal: chunks.length, cases: [], updatedAt: new Date().toISOString() })
+  // 各チャンクを並列保存
+  await Promise.all(
+    chunks.map((c, i) => setDoc(doc(db!, 'users', uid, 'plans', casesDocId(bu, i)), { cases: c, chunkIndex: i, chunkTotal: chunks.length })),
+  )
+  return { mode: 'chunked', count: arr.length, chunks: chunks.length }
 }
 
 const INITIAL_BU: BusinessUnit = loadSelectedBU()
@@ -350,8 +469,28 @@ export const usePlanStore = create<PlanStore>((set, get) => ({
       set({ dirty: false })
       return
     }
+    // cases を除いた plan を main doc に保存（1MB 制限対策）
+    // ※ Firestore は undefined を受け付けないため、フィールドごと取り除く
+    const cases = plan.priorYear?.cases
+    let planForMainDoc: Plan = plan
+    if (plan.priorYear) {
+      const { cases: _omit, ...priorYearRest } = plan.priorYear
+      planForMainDoc = { ...plan, priorYear: priorYearRest as typeof plan.priorYear }
+    }
     const ref = doc(db, 'users', uid, 'plans', firestoreDocId(businessUnit))
-    await setDoc(ref, plan)
+    await setDoc(ref, planForMainDoc)
+
+    // cases を別 doc に保存（必要ならチャンク分割）
+    try {
+      const res = await saveCloudCases(uid, businessUnit, cases)
+      if (res.mode === 'chunked') {
+        console.info(`[teiki-plan] cases saved in ${res.chunks} chunks (${res.count} 件)`)
+      }
+    } catch (e) {
+      console.warn('[teiki-plan] cases save failed', e)
+      throw e
+    }
+
     set({ dirty: false })
   },
 

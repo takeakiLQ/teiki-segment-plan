@@ -7,8 +7,11 @@ import {
   computeMonthly,
   computePriorYearEndCounts,
   computePriorYearMonthlySeries,
+  effectiveAcquisitionBasePrice,
   effectiveAcquisitionProfitPerCaseDay,
   effectiveAcquisitionUnitPrice,
+  effectiveTerminationBasePrice,
+  effectiveTerminationUnitPrice,
   estimateAverageRevenuePerCase,
   estimateCostRatesComparisonWithMeister,
   estimatePriorYearLastMonthUnitPrice,
@@ -420,6 +423,8 @@ export default function CategoriesPanel() {
         </div>
       </div>
 
+      <CostUpliftCommissionCard />
+
       <CohortPricingCard />
 
       <div className="card">
@@ -467,6 +472,237 @@ export default function CategoriesPanel() {
             </tbody>
           </table>
         </div>
+      </div>
+    </div>
+  )
+}
+
+/** 原価改定・同区分upliftの手数料率設定カード。
+ *  例: 運送店 手数料 18% → 入力1000円/件/日 の原価増は実効820円。
+ *      業者 手数料 0%  → 入力1000円 がそのまま1000円の原価増。
+ */
+function CostUpliftCommissionCard() {
+  const plan = usePlanStore((s) => s.plan)
+  const setPlan = usePlanStore((s) => s.setPlan)
+  const rate = plan.costUpliftCommissionRate ?? { partner: 0, vendor: 0, employment: 0 }
+
+  function setRate(cat: WorkerCategory, v: number) {
+    const clamped = Math.max(0, Math.min(99, Math.round((v || 0) * 100) / 100))
+    setPlan((p) => ({
+      ...p,
+      costUpliftCommissionRate: {
+        ...(p.costUpliftCommissionRate ?? { partner: 0, vendor: 0, employment: 0 }),
+        [cat]: clamped,
+      },
+    }))
+  }
+
+  const sample = 1000
+  const factorOf = (cat: WorkerCategory) => (100 - (rate[cat] ?? 0)) / 100
+
+  return (
+    <div className="card" id="cost-uplift-commission-card" style={{ background: '#fff7ed', borderColor: '#fed7aa' }}>
+      <div className="row between" style={{ flexWrap: 'wrap', gap: 8 }}>
+        <h3 style={{ color: '#9a3412', margin: 0 }}>💸 原価改定・同区分uplift 手数料率</h3>
+        <div className="muted" style={{ fontSize: 12 }}>
+          ユーザー入力額のうち、手数料ぶんを除いた「実効原価増」を計算に反映します。
+        </div>
+      </div>
+      <div className="muted" style={{ fontSize: 12, marginTop: 6, lineHeight: 1.6 }}>
+        例: 運送店に手数料 18% を設定 → 原価改定で「+1000円/件/日」と入力しても、
+        実効原価増は <strong>¥820/件/日</strong>（= 1000 × 82%）として計上されます。
+        業者は手数料 0% → 入力値がそのまま使われます。
+      </div>
+
+      <div className="scroll-x" style={{ marginTop: 10 }}>
+        <table>
+          <thead>
+            <tr>
+              <th>カテゴリ</th>
+              <th>手数料率（%）</th>
+              <th>実効倍率</th>
+              <th>例: 入力 ¥1,000/件/日 → 実効</th>
+            </tr>
+          </thead>
+          <tbody>
+            {WorkerCategoryOrder.map((cat) => {
+              const r = rate[cat] ?? 0
+              const eff = Math.round(sample * factorOf(cat))
+              return (
+                <tr key={`cuc-${cat}`}>
+                  <td><span className={`badge ${cat}`}>{WorkerCategoryLabels[cat]}</span></td>
+                  <td style={{ padding: 2 }}>
+                    <input
+                      type="number"
+                      min={0}
+                      max={99}
+                      step={0.01}
+                      value={r}
+                      onChange={(e) => setRate(cat, Number(e.target.value) || 0)}
+                      style={{ maxWidth: 120, textAlign: 'right' }}
+                    />
+                  </td>
+                  <td className="mono">{factorOf(cat).toFixed(2)}</td>
+                  <td className="mono">
+                    ¥{eff.toLocaleString()}
+                    {r > 0 && <span className="muted" style={{ fontSize: 11, marginLeft: 6 }}>（手数料 ¥{(sample - eff).toLocaleString()} 控除）</span>}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>
+        適用先: 📆 月次イベント → 原価改定 グリッド、および 入替 → 同区分 uplift 設定。
+        ベース原価率（カテゴリ別 原価設定）には影響しません。
+      </div>
+    </div>
+  )
+}
+
+/** 終了単価カード（FY2026 計画値）
+ *  モデル: 前年ベース（自動 or 手動）+ 調整（Abs + Pct）
+ *  ※ 旧 `terminationUnitPrice`（手動 override の最終値）が > 0 ならそれが最優先。
+ *     本カードでは「クリアして ベース+調整 に切替」ボタンを提供。
+ */
+function TerminationUnitPriceCard() {
+  const plan = usePlanStore((s) => s.plan)
+  const setPlan = usePlanStore((s) => s.setPlan)
+  const cp = plan.cohortPricing ?? ({} as any)
+
+  // 自動導出（明細から）
+  const termBase = effectiveTerminationBasePrice(plan)
+  const effective = effectiveTerminationUnitPrice(plan)
+  const poolPrice = plan.revenuePerCase ?? 0
+
+  // ソース判定
+  const manualOverride = (cp.terminationUnitPrice ?? 0) > 0
+  const manualPrior = (cp.priorTerminationUnitPrice ?? 0) > 0
+  const hasCases = (plan.priorYear?.cases?.length ?? 0) > 0
+  const annualSum = plan.priorYear?.annualSummary?.terminationUnitPrice ?? 0
+
+  const baseSourceLabel = manualPrior
+    ? '手動入力（priorTerminationUnitPrice）'
+    : hasCases
+      ? `案件明細から自動（計算日単価の平均・${plan.priorYear?.cases?.filter((c) => c.kind === 'term').length ?? 0}件）`
+      : annualSum > 0
+        ? 'FY2025 annualSummary（前年サマリー入力）'
+        : 'プール単価（フォールバック）'
+
+  const adjAbs = cp.terminationUnitPriceAdjAbs ?? 0
+  const adjPct = cp.terminationUnitPriceAdjPct ?? 0
+  const diffVsPool = effective - poolPrice
+
+  function updateCP(patch: Partial<typeof cp>) {
+    setPlan((p) => ({ ...p, cohortPricing: { ...p.cohortPricing, ...patch } }))
+  }
+
+  return (
+    <div className="card" style={{ background: '#fff', marginTop: 10 }}>
+      <h3 style={{ fontSize: 13, margin: '0 0 8px' }}>③ 終了案件の平均単価（FY2026 計画値）</h3>
+      <div className="muted" style={{ fontSize: 12, marginBottom: 8, lineHeight: 1.6 }}>
+        モデル: <strong>前年ベース</strong>（明細から自動算出 or 手動入力）+ <strong>調整</strong>（±円/日 or ±%）= <strong>FY2026 計画値</strong>。
+        <br />
+        <span style={{ color: '#166534' }}>※ この計画値が売上・粗利に比例補正として自動反映されます（粗利は実効原価率で按分）。</span>
+      </div>
+
+      {manualOverride && (
+        <div style={{ padding: 8, background: '#fef3c7', border: '1px dashed #fcd34d', borderRadius: 6, marginBottom: 10, fontSize: 12 }}>
+          ⚠️ 最終値が手動 override（¥{(cp.terminationUnitPrice ?? 0).toLocaleString()}/件/日）でセットされています。
+          下の「ベース + 調整」の値は無視されます。{' '}
+          <button
+            className="small ghost"
+            onClick={() => {
+              if (!confirm('手動 override をクリアして「ベース + 調整」モデルに切り替えますか？')) return
+              updateCP({ terminationUnitPrice: 0 })
+            }}
+          >override クリア</button>
+        </div>
+      )}
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))',
+          gap: 10,
+          alignItems: 'start',
+        }}
+      >
+        {/* ① 前年ベース */}
+        <div>
+          <label>前年ベース（自動導出）</label>
+          <div className="mono" style={{ padding: '6px 10px', background: '#f1f5f9', borderRadius: 6, height: 30, display: 'flex', alignItems: 'center', fontWeight: 700 }}>
+            ¥{termBase.toLocaleString()}/日
+          </div>
+          <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+            {baseSourceLabel}
+          </div>
+        </div>
+
+        {/* ② 調整 Abs */}
+        <div>
+          <label>調整 絶対額（±¥/日）</label>
+          <input
+            type="number"
+            value={adjAbs}
+            onChange={(e) => updateCP({ terminationUnitPriceAdjAbs: Math.round(Number(e.target.value) || 0) })}
+            style={{ height: 30, padding: '4px 10px' }}
+          />
+          <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>例: +500 / −1,000</div>
+        </div>
+
+        {/* ③ 調整 Pct */}
+        <div>
+          <label>調整 率（±%）</label>
+          <input
+            type="number"
+            step={0.1}
+            value={adjPct}
+            onChange={(e) => updateCP({ terminationUnitPriceAdjPct: Number(e.target.value) || 0 })}
+            style={{ height: 30, padding: '4px 10px' }}
+          />
+          <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>ベースに対する %</div>
+        </div>
+
+        {/* ④ → FY2026 計画値 */}
+        <div>
+          <label>→ FY2026 計画値（自動）</label>
+          <input
+            readOnly
+            value={`¥${Math.round(effective).toLocaleString()}/日`}
+            style={{
+              background: '#ecfdf5',
+              color: '#166534',
+              fontWeight: 700,
+              fontFamily: 'inherit',
+              height: 30,
+            }}
+          />
+          <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+            プール ¥{poolPrice.toLocaleString()} との差 {diffVsPool >= 0 ? '+' : '−'}¥{Math.abs(Math.round(diffVsPool)).toLocaleString()}
+          </div>
+        </div>
+      </div>
+
+      <div className="row" style={{ gap: 4, marginTop: 10, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+        <button
+          className="small ghost"
+          onClick={() => {
+            if (!confirm('調整を全てゼロに戻しますか？（ベースそのままを計画値にする）')) return
+            updateCP({ terminationUnitPriceAdjAbs: 0, terminationUnitPriceAdjPct: 0 })
+          }}
+        >調整クリア</button>
+        {(cp.priorTerminationUnitPrice ?? 0) > 0 && (
+          <button
+            className="small ghost"
+            onClick={() => {
+              if (!confirm('前年ベースの手動値をクリア（明細 or annualSummary からの自動導出に切替）しますか？')) return
+              updateCP({ priorTerminationUnitPrice: 0 })
+            }}
+          >前年ベース自動化</button>
+        )}
       </div>
     </div>
   )
@@ -573,76 +809,150 @@ function CohortPricingCard() {
       {/* Δpt で運送店/業者の原価率を分離 */}
       {plan.priorYear && <SegmentCostRateSplitterCard />}
 
-      {/* 獲得単価設定 */}
-      <div className="card" style={{ background: '#fff', marginTop: 10 }}>
-        <h3 style={{ fontSize: 13, margin: '0 0 8px' }}>① 獲得単価（全セグメント共通）</h3>
-        <div className="form-grid">
-          <div>
-            <label>前年（FY2025）獲得案件 平均単価（円/日）</label>
-            <div className="row" style={{ gap: 4 }}>
-              <input
-                type="number"
-                min={0}
-                value={cp.priorAcquisitionUnitPrice}
-                onChange={(e) => updateCP({ priorAcquisitionUnitPrice: Math.max(0, Math.round(Number(e.target.value) || 0)) })}
-                style={{ flex: 1 }}
-              />
-              {priorSummary?.acquisitionUnitPrice ? (
-                <button className="small" onClick={copyFromPriorSummary} title={`前年実績 ¥${priorSummary.acquisitionUnitPrice.toLocaleString()} を反映`}>
-                  前年実績 ¥{priorSummary.acquisitionUnitPrice.toLocaleString()} 引継
-                </button>
-              ) : (
-                <button className="small ghost" onClick={copyFromBase} title="2026-03単価をコピー">継続単価コピー</button>
+      {/* 獲得単価設定（前年ベース（自動 or 手動）+ 調整 モデル） */}
+      {(() => {
+        // 自動導出ベースと「手動オーバーライド」の判定
+        const manualPriorAcq = (cp.priorAcquisitionUnitPrice ?? 0) > 0
+        const autoAcqBase = effectiveAcquisitionBasePrice(plan) // 手動 > 明細自動 > annualSum > プール
+        const acqCaseCount = plan.priorYear?.cases?.filter((c) => c.kind === 'acq').length ?? 0
+        const hasCases = acqCaseCount > 0
+        const baseSourceLabel = manualPriorAcq
+          ? '手動入力（priorAcquisitionUnitPrice）'
+          : hasCases
+            ? `案件明細から自動（計算日単価の平均・${acqCaseCount}件）`
+            : priorSummary?.acquisitionUnitPrice
+              ? 'FY2025 annualSummary（前年サマリー入力）'
+              : 'プール単価（フォールバック）'
+
+        return (
+          <div className="card" style={{ background: '#fff', marginTop: 10 }}>
+            <h3 style={{ fontSize: 13, margin: '0 0 8px' }}>① 獲得単価（FY2026 計画値）</h3>
+            <div className="muted" style={{ fontSize: 12, marginBottom: 8, lineHeight: 1.6 }}>
+              モデル: <strong>前年ベース</strong>（明細から自動算出 or 手動入力）+ <strong>調整</strong>（±円/日 or ±%）= <strong>FY2026 獲得単価</strong>。
+              <br />
+              新規獲得案件に適用される単価（コホート効果）として、継続単価との差額が累積的に売上・粗利に寄与します。
+            </div>
+
+            {manualPriorAcq && (
+              <div style={{ padding: 8, background: '#fef3c7', border: '1px dashed #fcd34d', borderRadius: 6, marginBottom: 10, fontSize: 12 }}>
+                ℹ️ 前年ベースが手動値（¥{cp.priorAcquisitionUnitPrice.toLocaleString()}）で固定されています。
+                明細からの自動導出に切替えたい場合:{' '}
+                <button
+                  className="small ghost"
+                  onClick={() => {
+                    if (!confirm('前年ベース手動値をクリアして「明細からの自動導出」に切替えますか？')) return
+                    updateCP({ priorAcquisitionUnitPrice: 0 })
+                  }}
+                >手動値クリア</button>
+              </div>
+            )}
+
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))',
+                gap: 10,
+                alignItems: 'start',
+              }}
+            >
+              {/* ① 前年ベース（自動導出 or 手動上書き表示） */}
+              <div>
+                <label>前年ベース（自動導出）</label>
+                <div className="mono" style={{ padding: '6px 10px', background: '#f1f5f9', borderRadius: 6, height: 30, display: 'flex', alignItems: 'center', fontWeight: 700 }}>
+                  ¥{Math.round(autoAcqBase).toLocaleString()}/日
+                </div>
+                <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+                  {baseSourceLabel}
+                </div>
+              </div>
+
+              {/* ② 調整 Abs */}
+              <div>
+                <label>調整 絶対額（±¥/日）</label>
+                <input
+                  type="number"
+                  value={cp.acquisitionUnitPriceUpAbs}
+                  onChange={(e) => updateCP({ acquisitionUnitPriceUpAbs: Math.round(Number(e.target.value) || 0) })}
+                  style={{ height: 30, padding: '4px 10px' }}
+                />
+                <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>例: +500 / −1,000</div>
+              </div>
+
+              {/* ③ 調整 Pct */}
+              <div>
+                <label>調整 率（±%）</label>
+                <input
+                  type="number"
+                  step={0.1}
+                  value={cp.acquisitionUnitPriceUpPct}
+                  onChange={(e) => updateCP({ acquisitionUnitPriceUpPct: Number(e.target.value) || 0 })}
+                  style={{ height: 30, padding: '4px 10px' }}
+                />
+                <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>ベースに対する %</div>
+              </div>
+
+              {/* ④ → FY2026 獲得単価（自動） */}
+              <div>
+                <label>→ FY2026 獲得単価（自動）</label>
+                <input
+                  readOnly
+                  value={`¥${yen(Math.round(acqUnitPrice))}/日`}
+                  style={{
+                    background: '#ecfdf5',
+                    color: '#166534',
+                    fontWeight: 700,
+                    fontFamily: 'inherit',
+                    height: 30,
+                  }}
+                />
+                <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+                  継続単価 ¥{yen(basePrice)} との差{' '}
+                  {priceDelta >= 0 ? '+' : '−'}¥{yen(Math.abs(priceDelta))}
+                </div>
+              </div>
+            </div>
+
+            <div className="row" style={{ gap: 4, marginTop: 10, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+              <button
+                className="small ghost"
+                onClick={() => {
+                  if (!confirm('調整を全てゼロに戻しますか？（ベースそのままを獲得単価にする）')) return
+                  updateCP({ acquisitionUnitPriceUpAbs: 0, acquisitionUnitPriceUpPct: 0 })
+                }}
+              >調整クリア</button>
+              {priorSummary?.acquisitionUnitPrice && !manualPriorAcq && (
+                <button
+                  className="small ghost"
+                  onClick={() => {
+                    const v = priorSummary.acquisitionUnitPrice ?? 0
+                    if (!confirm(`前年ベースを手動値 ¥${v.toLocaleString()} に固定しますか？（annualSummary 値を手動値として設定）`)) return
+                    updateCP({ priorAcquisitionUnitPrice: v })
+                  }}
+                  title="自動導出から annualSummary 値（サマリー入力）に固定する"
+                >annualSummary 固定</button>
               )}
+              <button
+                className="small ghost"
+                onClick={copyFromBase}
+                title="2026-03 単価（プール単価）を手動値として設定"
+              >継続単価固定</button>
+            </div>
+
+            <div className="muted" style={{ fontSize: 11, marginTop: 8, lineHeight: 1.5 }}>
+              コホート効果: 継続単価 ¥{yen(basePrice)} vs 獲得単価 ¥{yen(Math.round(acqUnitPrice))} = 差額{' '}
+              <strong style={{ color: priceDelta > 0 ? '#16a34a' : priceDelta < 0 ? '#dc2626' : '#64748b' }}>
+                {priceDelta >= 0 ? '+' : ''}¥{yen(priceDelta)}/日
+              </strong>
+              <span style={{ margin: '0 6px', color: '#94a3b8' }}>／</span>
+              月額（20日）{' '}
+              <strong style={{ color: priceDelta > 0 ? '#16a34a' : priceDelta < 0 ? '#dc2626' : '#64748b' }}>
+                {priceDelta >= 0 ? '+' : ''}¥{yen(priceDelta * 20)}/月・1案件
+              </strong>
+              — 獲得件数が溜まるほど累積的に効く
             </div>
           </div>
-          <div>
-            <label>調整 絶対額（+¥/日）</label>
-            <input
-              type="number"
-              value={cp.acquisitionUnitPriceUpAbs}
-              onChange={(e) => updateCP({ acquisitionUnitPriceUpAbs: Math.round(Number(e.target.value) || 0) })}
-            />
-          </div>
-          <div>
-            <label>調整 率（+%）</label>
-            <input
-              type="number"
-              step={0.1}
-              value={cp.acquisitionUnitPriceUpPct}
-              onChange={(e) => updateCP({ acquisitionUnitPriceUpPct: Number(e.target.value) || 0 })}
-            />
-          </div>
-          <div>
-            <label>→ FY2026 獲得単価（自動）</label>
-            <input
-              readOnly
-              value={`¥${yen(Math.round(acqUnitPrice))} / 日`}
-              style={{
-                background: '#ecfdf5',
-                color: '#166534',
-                fontWeight: 700,
-                fontFamily: 'inherit',
-              }}
-            />
-          </div>
-        </div>
-        <div className="muted" style={{ fontSize: 11, marginTop: 6, lineHeight: 1.6 }}>
-          継続単価 ¥{yen(basePrice)} vs 獲得単価 ¥{yen(Math.round(acqUnitPrice))} = 差額{' '}
-          <strong style={{ color: priceDelta > 0 ? '#16a34a' : priceDelta < 0 ? '#dc2626' : '#64748b' }}>
-            {priceDelta >= 0 ? '+' : ''}¥{yen(priceDelta)}/日
-          </strong>
-          <span style={{ margin: '0 6px', color: '#94a3b8' }}>／</span>
-          月換算（20営業日）{' '}
-          <strong style={{ color: priceDelta > 0 ? '#16a34a' : priceDelta < 0 ? '#dc2626' : '#64748b' }}>
-            {priceDelta >= 0 ? '+' : ''}¥{yen(priceDelta * 20)}/月・1案件あたり
-          </strong>
-          <br />
-          <span className="muted">
-            新規獲得1件あたり 売上UP 月額 = 差額 ×20日。獲得件数が溜まるほど累積的に効く（コホート効果）。
-          </span>
-        </div>
-      </div>
+        )
+      })()}
 
       {/* セグメント別 獲得粗利UP */}
       <div className="card" style={{ background: '#fff', marginTop: 8 }}>
@@ -786,10 +1096,15 @@ function CohortPricingCard() {
         </div>
       )}
 
+      <TerminationUnitPriceCard />
+
+      {/* 旧「③ 終了案件の平均単価」カードは TerminationUnitPriceCard に置き換え。
+          旧 `plan.cohortPricing.terminationUnitPrice` は手動 override として下位互換で残る（> 0 なら最優先）。 */}
+
       {/* 粗利UP サマリー */}
       <div className="card" style={{ background: '#dcfce7', borderColor: '#22c55e', marginTop: 8 }}>
         <h3 style={{ color: '#14532d', fontSize: 13, margin: '0 0 8px' }}>
-          ③ 新規獲得1案件あたり 粗利UP サマリー（FY2026 対 FY2025獲得分）
+          ④ 新規獲得1案件あたり 粗利UP サマリー（FY2026 対 FY2025獲得分）
         </h3>
         <div className="scroll-x">
           <table>

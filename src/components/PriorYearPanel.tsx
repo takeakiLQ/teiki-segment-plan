@@ -1,6 +1,6 @@
-import { Fragment, useMemo, useRef } from 'react'
+import { Fragment, useMemo, useRef, useState } from 'react'
 import { createEmptyPriorYear, newId, usePlanStore } from '../store'
-import type { PriorYearMonthly, PriorYearPlan, WorkerCategory } from '../types'
+import type { PriorYearCaseDetail, PriorYearMonthly, PriorYearPlan, WorkerCategory } from '../types'
 import { WorkerCategoryLabels, WorkerCategoryOrder } from '../types'
 import {
   ALL_TRANSFER_PAIRS,
@@ -819,6 +819,8 @@ function PriorYearEditor({ py, onDisable }: { py: PriorYearPlan; onDisable: () =
         </div>
       </div>
 
+      <PriorYearCasesCard py={py} />
+
       <div className="card">
         <div className="row between">
           <h3>前年 月別 入替マトリクス（from → to）</h3>
@@ -978,5 +980,507 @@ function PriorYearEditor({ py, onDisable }: { py: PriorYearPlan; onDisable: () =
         </div>
       </div>
     </>
+  )
+}
+
+/* =========================================================
+   前年 案件明細（SF_ID 付き）— サマリー + 月別 + ドリルダウン
+
+   ※ 推奨プランで以下の設計判断を入れています（必要なら調整可）:
+   - 月平均 営業日数は PriorYearPlan.workingDaysByMonth の12ヶ月平均
+   - 「計算日単価」= 予定売上/月 ÷ 営業日数（月次は当月、サマリーは月平均）
+   - メイン/サブ の文字列は CSV の「メイン／サブ区分」の値をそのまま使用
+   - SF リンクテンプレートは取込 JSON の sfLinkTemplate があればそれ、なければ既定値
+   - 明細ドリルダウンのカラムは主要 15 個（必要に応じて追減可）
+   - ドリルダウンのスタイルはシンプル（並び替え機能なし）
+   ========================================================= */
+
+type CaseKind = 'acq' | 'term'
+type MainSubFilter = 'main' | 'sub' | 'all'
+
+function PriorYearCasesCard({ py }: { py: PriorYearPlan }) {
+  const setPlanFn = usePlanStore((s) => s.setPlan)
+  const cases = py.cases ?? []
+  const casesFileRef = useRef<HTMLInputElement>(null)
+  const [kind, setKind] = useState<CaseKind>('acq')
+  const [msFilter, setMsFilter] = useState<MainSubFilter>('all')
+  const [drillCell, setDrillCell] = useState<{ month: string; ms: MainSubFilter } | null>(null)
+
+  // 月平均 営業日数（前年の workingDaysByMonth から計算、未設定なら defaultWorkingDays）
+  const months = useMemo(() => monthsRange(py.baseMonth, py.horizonMonths), [py.baseMonth, py.horizonMonths])
+  const wdByMonth = useMemo(() => {
+    const map: Record<string, number> = {}
+    for (const m of months) {
+      map[m] = py.workingDaysByMonth?.[m] ?? py.defaultWorkingDays ?? 20
+    }
+    return map
+  }, [months, py.workingDaysByMonth, py.defaultWorkingDays])
+  const avgWorkingDays = useMemo(() => {
+    const vals = months.map((m) => wdByMonth[m])
+    return vals.length > 0 ? vals.reduce((s, v) => s + v, 0) / vals.length : 20
+  }, [months, wdByMonth])
+
+  // カテゴリフィルタ & 月別グルーピング
+  const filtered = useMemo(() => {
+    return cases.filter((c) => {
+      if (c.kind !== kind) return false
+      if (msFilter === 'main' && c.mainSub !== 'メイン') return false
+      if (msFilter === 'sub' && c.mainSub !== 'サブ') return false
+      return true
+    })
+  }, [cases, kind, msFilter])
+
+  // 想定稼働時間/日（グローバル設定、既定 8h）
+  const assumedHours = py.assumedWorkingHoursPerDay ?? 8
+
+  function aggMetrics(rows: PriorYearCaseDetail[]) {
+    const n = rows.length
+    if (n === 0) return { count: 0, avgContractUnit: 0, avgWorkDays: 0, calcUnit: 0, hourlyUnit: 0 }
+    let sumContract = 0
+    let sumWorkDays = 0
+    let sumCalc = 0
+    let sumHourly = 0
+    for (const r of rows) {
+      const wd = r.plannedWorkDays ?? 0
+      const rev = r.plannedRevenue ?? 0
+      const contractDaily = wd > 0 ? rev / wd : 0
+      sumContract += contractDaily
+      sumWorkDays += wd
+      sumCalc += rev / avgWorkingDays
+      // 時間単価: ケース固有の時間があればそれ、なければグローバル想定
+      const hrs = r.workingHoursPerDay && r.workingHoursPerDay > 0 ? r.workingHoursPerDay : assumedHours
+      sumHourly += hrs > 0 ? contractDaily / hrs : 0
+    }
+    return {
+      count: n,
+      avgContractUnit: Math.round(sumContract / n),
+      avgWorkDays: Math.round((sumWorkDays / n) * 10) / 10,
+      calcUnit: Math.round(sumCalc / n),
+      hourlyUnit: Math.round(sumHourly / n),
+    }
+  }
+
+  const byMonth = useMemo(() => {
+    const out: Record<string, PriorYearCaseDetail[]> = {}
+    for (const m of months) out[m] = []
+    for (const r of filtered) {
+      if (!out[r.planMonth]) continue
+      out[r.planMonth].push(r)
+    }
+    return out
+  }, [filtered, months])
+
+  // 年間ブロックごとのメトリクス
+  function metricsFor(ms: MainSubFilter, knd: CaseKind) {
+    const rows = cases.filter((c) => {
+      if (c.kind !== knd) return false
+      if (ms === 'main' && c.mainSub !== 'メイン') return false
+      if (ms === 'sub' && c.mainSub !== 'サブ') return false
+      return true
+    })
+    return aggMetrics(rows)
+  }
+
+  // --- JSON import ---
+  async function importCases(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    try {
+      const text = await file.text()
+      const obj = JSON.parse(text)
+      const arr: PriorYearCaseDetail[] = Array.isArray(obj) ? obj : (obj.cases ?? [])
+      if (!Array.isArray(arr) || arr.length === 0) throw new Error('cases 配列が見つかりません')
+      const sfLinkTemplate: string | undefined = obj.sfLinkTemplate
+      if (!confirm(`案件明細 ${arr.length} 件を取り込みます（既存は上書き）。続行しますか？`)) {
+        if (casesFileRef.current) casesFileRef.current.value = ''
+        return
+      }
+      setPlanFn((p) => {
+        if (!p.priorYear) return p
+        return { ...p, priorYear: { ...p.priorYear, cases: arr, sfLinkTemplate } }
+      })
+      alert(`取込完了: ${arr.length} 件`)
+    } catch (err: any) {
+      alert('読み込み失敗: ' + (err?.message ?? err))
+    } finally {
+      if (casesFileRef.current) casesFileRef.current.value = ''
+    }
+  }
+
+  function clearCases() {
+    if (!confirm('案件明細を全てクリアしますか？')) return
+    setPlanFn((p) => p.priorYear ? { ...p, priorYear: { ...p.priorYear, cases: [] } } : p)
+  }
+
+  const hasCases = cases.length > 0
+  const sfLink = (sfId?: string) => {
+    const tpl = py.sfLinkTemplate ?? 'https://logiquest.lightning.force.com/lightning/r/Oppotunities__c/{sfId}/view'
+    return sfId ? tpl.replace('{sfId}', sfId) : undefined
+  }
+
+  return (
+    <>
+      <div className="card" style={{ background: '#f0f9ff', borderColor: '#bae6fd' }}>
+        <div className="row between" style={{ flexWrap: 'wrap', gap: 8 }}>
+          <h3 style={{ color: '#0369a1', margin: 0 }}>🗂 前年 案件明細（SF_ID 付き）</h3>
+          <div className="row" style={{ gap: 4, flexWrap: 'wrap' }}>
+            <button className="small" onClick={() => casesFileRef.current?.click()}>📥 JSON 取込</button>
+            <input ref={casesFileRef} type="file" accept="application/json,.json" style={{ display: 'none' }} onChange={importCases} />
+            {hasCases && <button className="small ghost" onClick={clearCases}>全クリア</button>}
+          </div>
+        </div>
+        <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+          {hasCases
+            ? `明細 ${cases.length} 件（獲得 ${cases.filter((c) => c.kind === 'acq').length} / 終了 ${cases.filter((c) => c.kind === 'term').length}）。各数値セルをクリックで明細ドリルダウン。`
+            : '案件明細をまだ取り込んでいません。データ部から JSON を取込してください（例: data/urban/fy2025-cases.json）。'}
+        </div>
+      </div>
+
+      {hasCases && (
+        <>
+          {/* === タブ === */}
+          <div className="card" style={{ marginBottom: 8 }}>
+            <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+              <button className={kind === 'acq' ? 'small' : 'small ghost'} onClick={() => setKind('acq')} style={kind === 'acq' ? { background: '#16a34a' } : undefined}>🟢 獲得</button>
+              <button className={kind === 'term' ? 'small' : 'small ghost'} onClick={() => setKind('term')} style={kind === 'term' ? { background: '#dc2626' } : undefined}>🔴 終了</button>
+              <div style={{ flex: 1 }} />
+              <div className="row" style={{ gap: 8, alignItems: 'center', fontSize: 11 }}>
+                <span className="muted">想定稼働時間/日:</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={24}
+                  step={0.5}
+                  value={assumedHours}
+                  onChange={(e) => {
+                    const v = Math.max(1, Math.min(24, Number(e.target.value) || 8))
+                    setPlanFn((p) => p.priorYear ? { ...p, priorYear: { ...p.priorYear, assumedWorkingHoursPerDay: v } } : p)
+                  }}
+                  style={{ width: 60, padding: '2px 6px', fontSize: 11 }}
+                  title="ケース毎の workingHoursPerDay が未設定の場合のフォールバック値"
+                />
+                <span className="muted">時間</span>
+                <span style={{ margin: '0 6px', color: '#cbd5e1' }}>|</span>
+                <span className="muted">月平均営業日数: <strong>{avgWorkingDays.toFixed(2)}日</strong></span>
+              </div>
+            </div>
+          </div>
+
+          {/* === 年間サマリー（メイン/サブ/合計 + 案件区分別） === */}
+          <div className="card">
+            <h3 style={{ fontSize: 14, margin: '0 0 8px' }}>
+              📊 年間サマリー（{kind === 'acq' ? '獲得' : '終了'}）
+            </h3>
+            <div className="scroll-x">
+              <table>
+                <thead>
+                  <tr>
+                    <th>区分</th>
+                    <th>件数</th>
+                    <th>平均 契約単価/日</th>
+                    <th>平均 稼働日数</th>
+                    <th>計算日単価（月平均 {avgWorkingDays.toFixed(2)} 日換算）</th>
+                    <th>時間単価（{(() => {
+                      // 全ケースに workingHoursPerDay がある場合は「実データ」、混在時は「想定込み」表記
+                      const total = cases.filter((c) => c.kind === kind).length
+                      const withH = cases.filter((c) => c.kind === kind && c.workingHoursPerDay && c.workingHoursPerDay > 0).length
+                      if (total === 0) return `${assumedHours}h/日 想定`
+                      if (withH === total) return `拘束時間ベース`
+                      return `拘束時間 + ${assumedHours}h/日 想定`
+                    })()}）</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {/* 全体（メイン/サブ/合計） */}
+                  <tr><td colSpan={6} style={{ background: '#f1f5f9', fontWeight: 600, fontSize: 11, color: '#334155' }}>全体</td></tr>
+                  {([
+                    { k: 'main' as MainSubFilter, label: 'メイン', bg: '#eff6ff' },
+                    { k: 'sub' as MainSubFilter, label: 'サブ', bg: '#faf5ff' },
+                    { k: 'all' as MainSubFilter, label: 'メイン+サブ', bg: '#fef3c7' },
+                  ]).map(({ k, label, bg }) => {
+                    const m = metricsFor(k, kind)
+                    return (
+                      <tr key={`sum-${k}`} style={{ background: bg }}>
+                        <td><strong>{label}</strong></td>
+                        <td className="mono" style={{ fontWeight: 700 }}>{m.count}</td>
+                        <td className="mono">{m.avgContractUnit > 0 ? `¥${m.avgContractUnit.toLocaleString()}` : '—'}</td>
+                        <td className="mono">{m.avgWorkDays > 0 ? `${m.avgWorkDays}日` : '—'}</td>
+                        <td className="mono">{m.calcUnit > 0 ? `¥${m.calcUnit.toLocaleString()}` : '—'}</td>
+                        <td className="mono">{m.hourlyUnit > 0 ? `¥${m.hourlyUnit.toLocaleString()}` : '—'}</td>
+                      </tr>
+                    )
+                  })}
+
+                  {/* 案件区分別（新規/増車/入替/復活…） × メイン/サブ/合計 */}
+                  {(() => {
+                    // case の案件区分を件数順に取得（empty は除外）
+                    const byCaseType: Record<string, PriorYearCaseDetail[]> = {}
+                    for (const c of cases) {
+                      if (c.kind !== kind) continue
+                      const ct = (c.caseType || '').trim() || '(未設定)'
+                      if (!byCaseType[ct]) byCaseType[ct] = []
+                      byCaseType[ct].push(c)
+                    }
+                    const entries = Object.entries(byCaseType).sort((a, b) => b[1].length - a[1].length)
+                    if (entries.length === 0) return null
+
+                    function aggFiltered(rows: PriorYearCaseDetail[], ms: MainSubFilter) {
+                      const f = rows.filter((r) => {
+                        if (ms === 'main') return r.mainSub === 'メイン'
+                        if (ms === 'sub') return r.mainSub === 'サブ'
+                        return true
+                      })
+                      return aggMetrics(f)
+                    }
+
+                    return (
+                      <>
+                        <tr><td colSpan={6} style={{ background: '#f1f5f9', fontWeight: 600, fontSize: 11, color: '#334155' }}>案件区分別</td></tr>
+                        {entries.map(([ct, rows]) => (
+                          <Fragment key={`ct-${ct}`}>
+                            {([
+                              { k: 'main' as MainSubFilter, label: `${ct} − メイン`, bg: '#f8fafc' },
+                              { k: 'sub' as MainSubFilter, label: `${ct} − サブ`, bg: '#f8fafc' },
+                              { k: 'all' as MainSubFilter, label: `${ct} − メイン+サブ`, bg: '#e0e7ef' },
+                            ]).map(({ k, label, bg }) => {
+                              const m = aggFiltered(rows, k)
+                              if (m.count === 0) return null
+                              return (
+                                <tr key={`ct-${ct}-${k}`} style={{ background: bg }}>
+                                  <td style={{ fontSize: 12 }}>{k === 'all' ? <strong>{label}</strong> : label}</td>
+                                  <td className="mono" style={k === 'all' ? { fontWeight: 700 } : undefined}>{m.count}</td>
+                                  <td className="mono">{m.avgContractUnit > 0 ? `¥${m.avgContractUnit.toLocaleString()}` : '—'}</td>
+                                  <td className="mono">{m.avgWorkDays > 0 ? `${m.avgWorkDays}日` : '—'}</td>
+                                  <td className="mono">{m.calcUnit > 0 ? `¥${m.calcUnit.toLocaleString()}` : '—'}</td>
+                                  <td className="mono">{m.hourlyUnit > 0 ? `¥${m.hourlyUnit.toLocaleString()}` : '—'}</td>
+                                </tr>
+                              )
+                            })}
+                          </Fragment>
+                        ))}
+                      </>
+                    )
+                  })()}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* === 月別 ブレークダウン === */}
+          <div className="card">
+            <div className="row between" style={{ flexWrap: 'wrap', gap: 8 }}>
+              <h3 style={{ fontSize: 14, margin: 0 }}>📅 月別ブレークダウン（{kind === 'acq' ? '獲得' : '終了'}）</h3>
+              <div className="row" style={{ gap: 4 }}>
+                <button className={msFilter === 'main' ? 'small' : 'small ghost'} onClick={() => setMsFilter('main')} style={msFilter === 'main' ? { background: '#0369a1' } : undefined}>メイン</button>
+                <button className={msFilter === 'sub' ? 'small' : 'small ghost'} onClick={() => setMsFilter('sub')} style={msFilter === 'sub' ? { background: '#7c3aed' } : undefined}>サブ</button>
+                <button className={msFilter === 'all' ? 'small' : 'small ghost'} onClick={() => setMsFilter('all')} style={msFilter === 'all' ? { background: '#92400e' } : undefined}>メイン+サブ</button>
+              </div>
+            </div>
+            <div className="muted" style={{ fontSize: 11, marginTop: 4, marginBottom: 8 }}>
+              各月のセルをクリックで明細リストにドリルダウン
+            </div>
+            <div className="scroll-x">
+              <table>
+                <thead>
+                  <tr>
+                    <th>月</th>
+                    <th>件数</th>
+                    <th>平均 契約単価/日</th>
+                    <th>平均 稼働日数</th>
+                    <th>計算日単価</th>
+                    <th className="muted" style={{ fontSize: 10, fontWeight: 400 }}>換算日数</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {months.map((m) => {
+                    const rows = byMonth[m] ?? []
+                    const metrics = aggMetrics(rows)
+                    const wd = wdByMonth[m]
+                    // 月別の計算日単価はその月の営業日数を使うのが自然
+                    const calcUnitM = metrics.count > 0
+                      ? Math.round(rows.reduce((s, r) => s + ((r.plannedRevenue ?? 0) / wd), 0) / metrics.count)
+                      : 0
+                    const clickable = metrics.count > 0
+                    return (
+                      <tr
+                        key={`mo-${m}`}
+                        onClick={clickable ? () => setDrillCell({ month: m, ms: msFilter }) : undefined}
+                        style={{ cursor: clickable ? 'pointer' : 'default' }}
+                      >
+                        <td>{formatYmShort(m)}</td>
+                        <td className="mono" style={{ fontWeight: 600 }}>
+                          {metrics.count > 0 ? <span style={{ color: '#0284c7', textDecoration: 'underline' }}>{metrics.count}</span> : '—'}
+                        </td>
+                        <td className="mono">{metrics.avgContractUnit > 0 ? `¥${metrics.avgContractUnit.toLocaleString()}` : '—'}</td>
+                        <td className="mono">{metrics.avgWorkDays > 0 ? `${metrics.avgWorkDays}日` : '—'}</td>
+                        <td className="mono">{calcUnitM > 0 ? `¥${calcUnitM.toLocaleString()}` : '—'}</td>
+                        <td className="muted" style={{ fontSize: 10 }}>{wd.toFixed(2)}日</td>
+                      </tr>
+                    )
+                  })}
+                  {/* 合計 */}
+                  {(() => {
+                    const rows = filtered
+                    const total = aggMetrics(rows)
+                    const totCalcAvg = rows.length > 0
+                      ? Math.round(rows.reduce((s, r) => s + ((r.plannedRevenue ?? 0) / avgWorkingDays), 0) / rows.length)
+                      : 0
+                    const monthlyAvg = total.count / 12
+                    return (
+                      <>
+                        <tr style={{ background: '#e2e8f0', borderTop: '2px solid #cbd5e1' }}>
+                          <td><strong>年計</strong></td>
+                          <td className="mono" style={{ fontWeight: 700 }}>{total.count}</td>
+                          <td className="mono" style={{ fontWeight: 700 }}>{total.avgContractUnit > 0 ? `¥${total.avgContractUnit.toLocaleString()}` : '—'}</td>
+                          <td className="mono" style={{ fontWeight: 700 }}>{total.avgWorkDays > 0 ? `${total.avgWorkDays}日` : '—'}</td>
+                          <td className="mono" style={{ fontWeight: 700 }}>{totCalcAvg > 0 ? `¥${totCalcAvg.toLocaleString()}` : '—'}</td>
+                          <td className="muted" style={{ fontSize: 10 }}>月平均 {avgWorkingDays.toFixed(2)}日換算</td>
+                        </tr>
+                        <tr style={{ background: '#f1f5f9' }}>
+                          <td><strong>月平均</strong></td>
+                          <td className="mono">{monthlyAvg.toFixed(1)}</td>
+                          <td colSpan={4} className="muted" style={{ fontSize: 11 }}>（件数の月平均）</td>
+                        </tr>
+                      </>
+                    )
+                  })()}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* === ドリルダウンモーダル === */}
+      {drillCell && (
+        <CaseDrillDownModal
+          cases={cases}
+          month={drillCell.month}
+          msFilter={drillCell.ms}
+          kind={kind}
+          sfLink={sfLink}
+          assumedHours={assumedHours}
+          onClose={() => setDrillCell(null)}
+        />
+      )}
+    </>
+  )
+}
+
+function CaseDrillDownModal({
+  cases, month, msFilter, kind, sfLink, onClose, assumedHours,
+}: {
+  cases: PriorYearCaseDetail[]
+  month: string
+  msFilter: MainSubFilter
+  kind: CaseKind
+  sfLink: (sfId?: string) => string | undefined
+  onClose: () => void
+  /** 時間単価 算出用のフォールバック想定時間/日 */
+  assumedHours: number
+}) {
+  const rows = cases.filter((c) => {
+    if (c.planMonth !== month) return false
+    if (c.kind !== kind) return false
+    if (msFilter === 'main' && c.mainSub !== 'メイン') return false
+    if (msFilter === 'sub' && c.mainSub !== 'サブ') return false
+    return true
+  })
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', zIndex: 200,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: '#fff', borderRadius: 10, padding: 16, width: '95vw', maxWidth: 1400,
+          maxHeight: '90vh', overflow: 'auto',
+        }}
+      >
+        <div className="row between" style={{ marginBottom: 10 }}>
+          <h3 style={{ margin: 0 }}>
+            📋 案件明細 — {formatYmShort(month)} / {kind === 'acq' ? '獲得' : '終了'} / {msFilter === 'main' ? 'メイン' : msFilter === 'sub' ? 'サブ' : 'メイン+サブ'}（{rows.length}件）
+          </h3>
+          <button className="small ghost" onClick={onClose}>✕ 閉じる</button>
+        </div>
+        <div className="muted" style={{ fontSize: 10, marginBottom: 6 }}>
+          時間単価 = 契約単価/日 ÷ 拘束時間/日。<strong>*</strong> は拘束時間が未設定のケース（想定{assumedHours}h/日を使用）。
+        </div>
+        <div className="scroll-x">
+          <table style={{ fontSize: 11 }}>
+            <thead>
+              <tr>
+                <th>SF</th>
+                <th>支店</th>
+                <th>取引先</th>
+                <th>案件区分</th>
+                <th>PT</th>
+                <th>メイン/サブ</th>
+                <th>長短</th>
+                <th className="right">契約単価</th>
+                <th className="right">稼働日数</th>
+                <th className="right">拘束時間/日</th>
+                <th className="right">時間単価</th>
+                <th className="right">予定売上/月</th>
+                <th className="right">予定粗利/月</th>
+                <th>業種</th>
+                <th>貨物</th>
+                <th>稼働開始</th>
+                <th>稼働終了</th>
+                {kind === 'term' && <th>終了理由</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => {
+                const link = sfLink(r.sfId)
+                return (
+                  <tr key={`dd-${i}`}>
+                    <td>
+                      {link ? <a href={link} target="_blank" rel="noreferrer">🔗</a> : '—'}
+                    </td>
+                    <td>{r.branch ?? ''}</td>
+                    <td>{r.customer ?? ''}</td>
+                    <td>{r.caseType ?? ''}</td>
+                    <td><span className={`badge ${r.ptCategory === 'unknown' ? '' : r.ptCategory}`}>{WorkerCategoryLabels[r.ptCategory as WorkerCategory] ?? r.ptCategory}</span></td>
+                    <td>{r.mainSub ?? ''}</td>
+                    <td>{r.longShort ?? ''}</td>
+                    <td className="mono right">¥{(r.contractUnitPrice ?? 0).toLocaleString()}</td>
+                    <td className="mono right">{r.plannedWorkDays ?? ''}</td>
+                    {(() => {
+                      const wd = r.plannedWorkDays ?? 0
+                      const rev = r.plannedRevenue ?? 0
+                      const contractDaily = wd > 0 ? rev / wd : 0
+                      const hrs = r.workingHoursPerDay && r.workingHoursPerDay > 0 ? r.workingHoursPerDay : assumedHours
+                      const hourly = hrs > 0 ? Math.round(contractDaily / hrs) : 0
+                      const isAssumed = !(r.workingHoursPerDay && r.workingHoursPerDay > 0)
+                      return (
+                        <>
+                          <td className="mono right" style={isAssumed ? { color: '#94a3b8' } : undefined}>
+                            {hrs}{isAssumed ? '*' : ''}
+                          </td>
+                          <td className="mono right">{hourly > 0 ? `¥${hourly.toLocaleString()}` : '—'}</td>
+                        </>
+                      )
+                    })()}
+                    <td className="mono right">¥{(r.plannedRevenue ?? 0).toLocaleString()}</td>
+                    <td className="mono right">¥{(r.plannedGP ?? 0).toLocaleString()}</td>
+                    <td>{r.industry ?? ''}</td>
+                    <td>{r.cargo ?? ''}</td>
+                    <td>{r.workStart ?? ''}</td>
+                    <td>{r.workEnd ?? ''}</td>
+                    {kind === 'term' && <td>{r.endReason ?? ''}</td>}
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
   )
 }
