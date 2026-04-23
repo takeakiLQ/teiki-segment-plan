@@ -10,6 +10,7 @@
     "deploy": "gh-pages -d dist"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.27.0",
     "firebase": "^10.12.5",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

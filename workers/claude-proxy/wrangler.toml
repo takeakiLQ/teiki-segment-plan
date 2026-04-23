@@ -1,0 +1,13 @@
+name = "claude-proxy"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+
+# === secrets（wrangler secret put で登録）==========================
+#   ANTHROPIC_API_KEY       : Anthropic API Key（sk-ant-...）
+#   FIREBASE_PROJECT_ID     : Firebase プロジェクト ID（giq-teiki-pj など）
+#   ALLOWED_ORIGINS         : カンマ区切りの許可 Origin（例: "https://takeakilq.github.io,http://localhost:5173"）
+# ===================================================================
+
+# ログを見たい場合
+[observability]
+enabled = true

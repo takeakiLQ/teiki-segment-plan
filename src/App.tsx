@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { User } from 'firebase/auth'
 import { doSignOut, firebaseReady, subscribeAuth } from './firebase'
 import { usePlanStore } from './store'
+import { useAssistantStore } from './assistant/assistantStore'
 import { BUSINESS_UNITS, BusinessUnitOrder } from './data/businessUnits'
 import Login from './components/Login'
 import Dashboard from './components/Dashboard'
@@ -10,6 +11,7 @@ import CategoriesPanel from './components/CategoriesPanel'
 import EventsPanel from './components/EventsPanel'
 import PriorYearPanel from './components/PriorYearPanel'
 import SettingsPanel from './components/SettingsPanel'
+import AssistantFloat from './components/AssistantFloat'
 
 type View = 'dashboard' | 'monthly' | 'categories' | 'events' | 'priorYear' | 'settings'
 
@@ -36,6 +38,7 @@ export default function App() {
   const businessUnit = usePlanStore((s) => s.businessUnit)
   const setBusinessUnit = usePlanStore((s) => s.setBusinessUnit)
   const bu = BUSINESS_UNITS[businessUnit]
+  const assistantSetUid = useAssistantStore((s) => s.setUid)
 
   useEffect(() => {
     const unsub = subscribeAuth((u) => {
@@ -44,8 +47,10 @@ export default function App() {
       if (u) {
         setGuestMode(false)
         setUid(u.uid)
+        assistantSetUid(u.uid)
       } else {
         setUid(null)
+        assistantSetUid(null)
       }
     })
     return () => unsub()
@@ -196,6 +201,9 @@ export default function App() {
         {view === 'priorYear' && <PriorYearPanel />}
         {view === 'settings' && <SettingsPanel />}
       </main>
+
+      {/* 🤖 フロートチャット（右下常駐、全ページ共通） */}
+      <AssistantFloat />
     </div>
   )
 }

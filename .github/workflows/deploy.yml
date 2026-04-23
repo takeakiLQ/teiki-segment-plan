@@ -39,6 +39,13 @@ jobs:
           VITE_FIREBASE_STORAGE_BUCKET:   ${{ secrets.VITE_FIREBASE_STORAGE_BUCKET }}
           VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
           VITE_FIREBASE_APP_ID:           ${{ secrets.VITE_FIREBASE_APP_ID }}
+          # Claude (Anthropic) API — AIアシスタント用
+          # 【推奨】proxy モード: Cloudflare Worker が Firebase Auth 検証 + Anthropic 転送
+          #         キーは Worker secret なのでクライアントに露出しない
+          VITE_CLAUDE_PROXY_URL:          ${{ secrets.VITE_CLAUDE_PROXY_URL }}
+          # 【非推奨】直接モード: proxy が無いときだけ使われる。キーがバンドルに含まれる
+          VITE_ANTHROPIC_API_KEY:         ${{ secrets.VITE_ANTHROPIC_API_KEY }}
+          VITE_ANTHROPIC_MODEL:           ${{ secrets.VITE_ANTHROPIC_MODEL }}
         run: npm run build
 
       - name: SPA fallback (404.html = index.html)
