@@ -213,6 +213,12 @@ export interface Plan {
 
   /** 入替 */
   transfers: TransferEvent[]
+  /** 入替インパクト残存係数（%）。入替した案件のうち「年度を通じて残存する」割合の想定値。
+   *  100 なら従来どおり全量が年度内に残って最大インパクト、80 なら約20%が途中で終了する想定で
+   *  非対角（構成比変動）と対角（同区分uplift）の両方のインパクトに同じ係数が掛かる。
+   *  通常の枠切れ（terminationTotal）に入替案件が含まれる二重カウントを補正する位置付け。
+   *  省略時は 100（既存データ互換）。 */
+  transferImpactRetention?: number
   /** 条件変更（旧式: 全体単価/カテゴリ原価率の改定） */
   conditionChanges: ConditionChange[]
   /** 部分 原価改定（N件に対する +X円/件/日 の継続加算） */

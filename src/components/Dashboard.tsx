@@ -38,6 +38,7 @@ import {
   nonDiagonalProfitPerCasePerDay,
   percent,
   priorYm,
+  transferRetentionFactor,
   workingDaysOf,
   yen,
 } from '../utils/calculations'
@@ -1938,7 +1939,9 @@ function ParamCardsRow({
   // 入替 粗利インパクト（年間合計）
   //   構成比変動（非対角）= Σ per pair: cum_count(m) × (cost_from - cost_to) × days(m) for each month m
   //   同区分uplift（対角・累計コスト、原価増=負の粗利）
+  //   transferImpactRetention （残存係数）を mix / uplift 両方に適用
   const monthsForImpact = monthsRange(plan.baseMonth, plan.horizonMonths)
+  const retention = transferRetentionFactor(plan)
   let mixImpactYear = 0
   let diagImpactYear = 0
   for (const m of monthsForImpact) {
@@ -1949,14 +1952,14 @@ function ParamCardsRow({
       const cum = cumulativeNonDiagonalCount(plan.transfers, m, pair.from, pair.to)
       if (cum <= 0) continue
       const unit = nonDiagonalProfitPerCasePerDay(plan, pair.from, pair.to, m)
-      mixImpactYear += cum * unit * days
+      mixImpactYear += cum * unit * days * retention
     }
     // 対角 uplift（手数料控除後の実効額、原価増＝粗利マイナス）
     const cumP = cumulativeDiagonalCount(plan.transfers, m, 'partner')
     const cumV = cumulativeDiagonalCount(plan.transfers, m, 'vendor')
     const xp = effectiveDiagonalUpliftAt(plan, m, 'partner') * costUpliftFactor(plan, 'partner')
     const xv = effectiveDiagonalUpliftAt(plan, m, 'vendor') * costUpliftFactor(plan, 'vendor')
-    diagImpactYear += cumP * xp * days + cumV * xv * days
+    diagImpactYear += (cumP * xp * days + cumV * xv * days) * retention
   }
   mixImpactYear = Math.round(mixImpactYear)
   diagImpactYear = Math.round(diagImpactYear)
@@ -2117,7 +2120,9 @@ function ParamCardsRow({
           value={`${currentTransfers.toLocaleString()}件 (非対角)`}
           sub={(() => {
             const fm = (x: number) => `${x >= 0 ? '+' : '−'}¥${(Math.abs(x) / 1_000_000).toFixed(1)}M`
-            return `構成比 ${fm(mixImpactYear)} ／ 同区分 ${fm(-diagImpactYear)} ／ 合計 ${fm(totalTransferImpact)}`
+            const retentionPct = Math.round(retention * 100)
+            const retentionNote = retentionPct < 100 ? `　[残存 ${retentionPct}% 適用]` : ''
+            return `構成比 ${fm(mixImpactYear)} ／ 同区分 ${fm(-diagImpactYear)} ／ 合計 ${fm(totalTransferImpact)}${retentionNote}`
           })()}
           delta={hasPriorYear ? currentTransfers - priorTransfers : undefined}
           deltaUnit="件"

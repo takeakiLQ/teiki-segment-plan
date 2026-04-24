@@ -1811,6 +1811,56 @@ function TransfersList() {
         </div>
       </div>
 
+      <div className="card" style={{ background: '#faf5ff', borderColor: '#d8b4fe' }}>
+        <div className="row between" style={{ alignItems: 'flex-start', flexWrap: 'wrap', gap: 8 }}>
+          <div style={{ flex: '1 1 260px' }}>
+            <h3 style={{ color: '#6b21a8', margin: 0 }}>入替インパクト 残存係数</h3>
+            <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+              入替した案件のうち、<strong>年度を通じて残存する割合</strong>の想定値（%）。<br />
+              100% = 入替した全件が年末まで残る（従来どおり最大インパクト）<br />
+              80% = 平均して2割は通常の枠切れで消える想定（インパクトを0.8倍に抑制）<br />
+              <span style={{ color: '#6b21a8' }}>構成比インパクト（非対角）・同区分uplift 原価 の両方に同じ係数が掛かります。</span>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              step={1}
+              value={plan.transferImpactRetention ?? 100}
+              onChange={(e) => {
+                const v = Math.max(0, Math.min(100, Number(e.target.value) || 0))
+                setPlan((p) => ({ ...p, transferImpactRetention: v }))
+              }}
+              style={{ width: 80, textAlign: 'right', fontWeight: 700, color: '#6b21a8' }}
+            />
+            <span className="muted" style={{ fontSize: 12 }}>%</span>
+            <div style={{ display: 'flex', gap: 4 }}>
+              <button
+                className="small ghost"
+                title="前年実績から観察される「入替 → 残存率」の初期想定"
+                onClick={() => setPlan((p) => ({ ...p, transferImpactRetention: 100 }))}
+              >
+                100%
+              </button>
+              <button
+                className="small ghost"
+                onClick={() => setPlan((p) => ({ ...p, transferImpactRetention: 80 }))}
+              >
+                80%
+              </button>
+              <button
+                className="small ghost"
+                onClick={() => setPlan((p) => ({ ...p, transferImpactRetention: 50 }))}
+              >
+                50%
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div className="card" style={{ background: '#fffbeb', borderColor: '#fcd34d' }}>
         <div className="row between">
           <h3 style={{ color: '#92400e' }}>同区分入替 原価引き上げ（uplift）</h3>

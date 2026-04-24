@@ -73,6 +73,7 @@ export function createEmptyPlan(name = 'メイン計画'): Plan {
     defaultWorkingDays: 20,
     diagonalUplift: { partner: 0, vendor: 0 },
     diagonalUpliftByMonth: [],
+    transferImpactRetention: 100,
     costUpliftCommissionRate: { partner: 0, vendor: 0, employment: 0 },
     meisterRevenueByMonth: {},
     meisterAllocation: { partner: 100, vendor: 0, employment: 0 },

@@ -166,6 +166,16 @@ export function effectiveDiagonalUpliftAt(
   return plan.diagonalUplift?.[cat] ?? 0
 }
 
+/** 入替インパクト残存係数（0〜1）。
+ *  plan.transferImpactRetention (%) が設定されていればそれを 0-100 にクランプして 1/100 で返す。
+ *  省略・未定義なら 1.0（従来どおり全量インパクト）。
+ *  非対角（構成比変動）と対角（同区分uplift）の両方に等しく掛ける想定。 */
+export function transferRetentionFactor(plan: Plan): number {
+  const r = plan.transferImpactRetention
+  if (typeof r !== 'number' || !Number.isFinite(r)) return 1
+  return Math.max(0, Math.min(100, r)) / 100
+}
+
 /** 指定月に有効な配車比率を返す（月別オーバーライドがあればそれ、無ければデフォルト） */
 export function effectiveRatio(
   plan: Plan,
@@ -219,19 +229,23 @@ export function computeMonthly(plan: Plan): MonthlyRow[] {
     cumTerm += termTotal
 
     // (3) 入替（対角は件数に影響なし、non-diagonal のみ counts を移動）
+    //     transferImpactRetention を掛けて「年度を通じて残存する実効件数」ぶんだけ動かす
+    const retention = transferRetentionFactor(plan)
     let transfersTotal = 0
     for (const t of plan.transfers) {
       if (t.month !== ym) continue
       if (t.from !== t.to) {
-        counts[t.from] -= t.count
-        counts[t.to] += t.count
+        const eff = t.count * retention
+        counts[t.from] -= eff
+        counts[t.to] += eff
       }
       transfersTotal += t.count
     }
 
     // (3.5) 同区分入替の累計を更新（partner/vendor のみ）
-    cumDiag.partner += diagonalCount(plan.transfers, ym, 'partner')
-    cumDiag.vendor += diagonalCount(plan.transfers, ym, 'vendor')
+    //       対角 uplift も残存係数を適用（入替した案件が終了すると uplift 原価も消える想定）
+    cumDiag.partner += diagonalCount(plan.transfers, ym, 'partner') * retention
+    cumDiag.vendor += diagonalCount(plan.transfers, ym, 'vendor') * retention
 
     // (4) クランプ
     for (const c of WorkerCategoryOrder) {
@@ -1225,17 +1239,20 @@ export function computeMarginBridge(plan: Plan): MarginBridgeRow[] {
     cumTerm += termTotal
 
     const transfersNet: CategoryMap<number> = { partner: 0, vendor: 0, employment: 0 }
+    // 残存係数（入替インパクトのうち年度内に残る割合）。mix/uplift 両方に適用して主計算と整合
+    const retentionMB = transferRetentionFactor(plan)
     for (const t of plan.transfers) {
       if (t.month !== ym) continue
       if (t.from !== t.to) {
-        counts[t.from] -= t.count
-        counts[t.to] += t.count
-        transfersNet[t.from] -= t.count
-        transfersNet[t.to] += t.count
+        const eff = t.count * retentionMB
+        counts[t.from] -= eff
+        counts[t.to] += eff
+        transfersNet[t.from] -= eff
+        transfersNet[t.to] += eff
       }
     }
-    cumDiag.partner += diagonalCount(plan.transfers, ym, 'partner')
-    cumDiag.vendor += diagonalCount(plan.transfers, ym, 'vendor')
+    cumDiag.partner += diagonalCount(plan.transfers, ym, 'partner') * retentionMB
+    cumDiag.vendor += diagonalCount(plan.transfers, ym, 'vendor') * retentionMB
 
     for (const c of WorkerCategoryOrder) {
       counts[c] = Math.max(0, Math.round(counts[c]))

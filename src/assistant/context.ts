@@ -37,6 +37,7 @@ export function buildSystemPrompt({ plan, businessUnit, knowledge }: BuildArgs):
   parts.push('- **獲得単価 / 終了単価** = 前年ベース（case 明細から自動算出 or 手動 or annualSummary）+ 調整（Abs + Pct）')
   parts.push('  - `effectiveAcquisitionUnitPrice` / `effectiveTerminationUnitPrice` を参照')
   parts.push('- **入替** は非対角（カテゴリ間移動）は件数シフトのみ、対角（同区分入替）は累積 uplift で原価累積加算')
+  parts.push('  - `plan.transferImpactRetention` (%) = 入替案件のうち年度内に残存する割合の想定係数。mix/uplift 両方に掛かる。100なら全量、80なら2割は枠切れで消える想定')
   parts.push('- **マイスター** は案件プール内の代走で、売上は不変・代走先カテゴリの原価率ぶん原価を削減（粗利増）')
   parts.push('- **単価アップ** は累積型＆還元率付き（例: 100万円アップの還元率40%→粗利寄与60万円）')
   parts.push('- **原価改定/単価改定** は特定カテゴリの N 件 × +X円/件/日 が effectiveMonth 以降継続的に加算')
@@ -56,6 +57,7 @@ export function buildSystemPrompt({ plan, businessUnit, knowledge }: BuildArgs):
   parts.push(`- 予算: 売上 ¥${(plan.budget?.revenue ?? 0).toLocaleString()} / 粗利 ¥${(plan.budget?.grossProfit ?? 0).toLocaleString()}`)
   parts.push(`- 原価率: 運送店 ${plan.categories.partner.costRate}% / 業者 ${plan.categories.vendor.costRate}% / 社員 ${plan.categories.employment.costRate}%`)
   parts.push(`- 前年実績: ${py ? `FY2025 データあり（案件明細 ${py.cases?.length ?? 0} 件）` : '未登録'}`)
+  parts.push(`- 入替インパクト残存係数: ${plan.transferImpactRetention ?? 100}%（入替由来の粗利影響に掛かる）`)
   parts.push('')
 
   // ナレッジ
