@@ -386,6 +386,36 @@ export function MeisterCard() {
     })
   }
 
+  /** 月平均額 × 12ヶ月 の年計を、各月の営業日数で案分 */
+  function applyAverageByWorkingDays(amount: number) {
+    if (amount <= 0) return
+    const daysByMonth = months.map((m) => {
+      const v = plan.workingDaysByMonth?.[m]
+      return typeof v === 'number' && v > 0 ? v : plan.defaultWorkingDays
+    })
+    const totalDays = daysByMonth.reduce((a, b) => a + b, 0)
+    if (totalDays <= 0) {
+      alert('営業日数が未設定です。先に「計画設定 → 月ごとの計算日数」で登録してください。')
+      return
+    }
+    const annual = amount * months.length
+    const avgDays = totalDays / months.length
+    const minDays = Math.min(...daysByMonth)
+    const maxDays = Math.max(...daysByMonth)
+    if (!confirm(
+      `月平均 ¥${fmt(amount)}/月（年計 ¥${fmt(annual)}）を、各月の営業日数で案分します。\n` +
+      `  営業日数: 合計 ${round2(totalDays)}日 / 平均 ${round2(avgDays)}日 / 範囲 ${round2(minDays)}〜${round2(maxDays)}日\n` +
+      `多い月は多く、少ない月は少なく配分されます。よろしいですか？`
+    )) return
+    setPlan((p) => {
+      const next: Record<string, number> = {}
+      months.forEach((m, i) => {
+        next[m] = Math.round(annual * (daysByMonth[i] / totalDays))
+      })
+      return { ...p, meisterRevenueByMonth: next }
+    })
+  }
+
   /** 前年の月次パターン × (1 + pct/100) */
   function applyPercentFromPriorYear(pct: number) {
     if (priorCount === 0) {
@@ -530,7 +560,7 @@ export function MeisterCard() {
           </div>
           <div>
             <label>② 月平均 Y円 を全月</label>
-            <div className="row" style={{ gap: 6 }}>
+            <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
               <input
                 type="number"
                 value={avgInput}
@@ -538,10 +568,20 @@ export function MeisterCard() {
                 style={{ width: 140 }}
               />
               <span className="muted" style={{ fontSize: 12 }}>円/月</span>
-              <button className="small" onClick={() => applyAverage(avgInput)}>適用</button>
+              <button className="small" onClick={() => applyAverage(avgInput)} title="全月を同額（月平均）で一律セット">
+                一律適用
+              </button>
+              <button
+                className="small"
+                onClick={() => applyAverageByWorkingDays(avgInput)}
+                title="年計（月平均×12）を、各月の営業日数で案分"
+                style={{ background: '#7c3aed', color: '#fff', borderColor: '#7c3aed' }}
+              >
+                営業日数で案分
+              </button>
             </div>
             <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
-              年計 ¥{fmt(avgInput * months.length)}
+              年計 ¥{fmt(avgInput * months.length)}　／　営業日数で案分すると年計は同じで月ごとに変動
             </div>
           </div>
           <div>
