@@ -1821,6 +1821,11 @@ function TransfersList() {
               80% = 平均して2割は通常の枠切れで消える想定（インパクトを0.8倍に抑制）<br />
               <span style={{ color: '#6b21a8' }}>構成比インパクト（非対角）・同区分uplift 原価 の両方に同じ係数が掛かります。</span>
             </div>
+            <div style={{ fontSize: 11, marginTop: 6, padding: 6, background: '#fff', borderRadius: 4, border: '1px dashed #d8b4fe', color: '#6b21a8' }}>
+              ℹ️ <strong>注:</strong> Dashboard の「入替（年間）」カードの表示数字と、年間粗利計画の増減は <strong>厳密には一致しません</strong>。<br />
+              係数を下げるとプールの構成比が変わり、終了単価補正・単価アップの累積・原価率モデルなど複数の計算式に同時に波及するため、<br />
+              粗利計画の改善幅は Dashboard 表示のインパクト差分より <strong>小さめに出る</strong>ことがあります（物理的には案B=両方適用が正）。
+            </div>
           </div>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
             <input

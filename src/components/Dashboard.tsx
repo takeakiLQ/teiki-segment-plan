@@ -2129,6 +2129,7 @@ function ParamCardsRow({
           color="#9333ea"
           to="events"
           subTab="transfer"
+          tooltip={'この数字は構成比×件数×日数の理論値です。\n年間粗利計画の増減とは厳密には一致しません（終了単価補正・原価率モデル・単価アップ累積などに相互に影響するため）。\n係数を下げた場合の粗利改善は、表示インパクトの差分より小さめになる傾向があります。'}
         />
         <LinkCard
           title="単価アップ (3月時点)"
@@ -2183,6 +2184,7 @@ function LinkCard({
   to,
   subTab,
   anchor,
+  tooltip,
 }: {
   title: string
   value: string
@@ -2196,6 +2198,8 @@ function LinkCard({
   to: NavView
   subTab?: string
   anchor?: string
+  /** カードにホバー時のツールチップ（注釈用） */
+  tooltip?: string
 }) {
   const deltaIsGood = delta == null
     ? null
@@ -2211,6 +2215,7 @@ function LinkCard({
 
   return (
     <div
+      title={tooltip}
       style={{
         background: '#fff',
         border: `1px solid ${color}33`,
