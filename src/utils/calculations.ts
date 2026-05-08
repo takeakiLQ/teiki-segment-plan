@@ -247,9 +247,14 @@ export function computeMonthly(plan: Plan): MonthlyRow[] {
     cumDiag.partner += diagonalCount(plan.transfers, ym, 'partner') * retention
     cumDiag.vendor += diagonalCount(plan.transfers, ym, 'vendor') * retention
 
-    // (4) クランプ
+    // (4) クランプ：負値のみ 0 に。
+    //     ROUND は意図的に外している。retention のような連続パラメータで
+    //     浮動小数件数を整数化すると Math.round の境界（.5 跨ぎ）で粗利が
+    //     階段状にジャンプし、微小な変化が ¥数百万〜数千万の段差を生む。
+    //     金額計算（revenue/cost）は最終ステップで丸めるので、件数を
+    //     浮動小数で保持しても表示や合計の精度は損なわれない。
     for (const c of WorkerCategoryOrder) {
-      counts[c] = Math.max(0, Math.round(counts[c]))
+      counts[c] = Math.max(0, counts[c])
     }
 
     // (5) 金額計算（日単価 × 計算日数）
@@ -268,18 +273,18 @@ export function computeMonthly(plan: Plan): MonthlyRow[] {
     let totalCost = 0
     for (const cat of WorkerCategoryOrder) {
       const cfg = effectiveConfigAt(plan, cat, ym)
-      const count = counts[cat]
-      const revenue = Math.round(count * revPerCase * days)
+      const countFloat = counts[cat]   // 計算用（小数あり）
+      const revenue = Math.round(countFloat * revPerCase * days)
       let cost =
         cfg.costModel === 'rate'
           ? Math.round((revenue * cfg.costRate) / 100)
-          : Math.round(count * cfg.costAmount * days)
+          : Math.round(countFloat * cfg.costAmount * days)
       // 同区分入替 uplift を原価に加算
       if (cat === 'partner') cost += diagCostPartner
       else if (cat === 'vendor') cost += diagCostVendor
       const profit = revenue - cost
       byCategory[cat] = {
-        count,
+        count: Math.round(countFloat),  // 表示用は整数
         newCases: acqDist[cat],
         endingCases: termDist[cat],
         revenue,
@@ -290,7 +295,7 @@ export function computeMonthly(plan: Plan): MonthlyRow[] {
         effectiveCostRate: cfg.costModel === 'rate' ? cfg.costRate : undefined,
         effectiveCostAmount: cfg.costModel === 'amount' ? cfg.costAmount : undefined,
       }
-      totalCount += count
+      totalCount += countFloat
       totalRevenue += revenue
       totalCost += cost
     }
@@ -339,7 +344,7 @@ export function computeMonthly(plan: Plan): MonthlyRow[] {
     rows.push({
       month: ym,
       byCategory,
-      totalCount,
+      totalCount: Math.round(totalCount),  // 表示用に整数化
       totalRevenue,
       totalCost,
       totalProfit,
@@ -349,7 +354,7 @@ export function computeMonthly(plan: Plan): MonthlyRow[] {
       transfersTotal,
     })
 
-    prevCounts = counts
+    prevCounts = counts  // 次月の起点は浮動小数のまま引き継ぐ（精度保持）
   }
 
   return rows
@@ -1254,9 +1259,11 @@ export function computeMarginBridge(plan: Plan): MarginBridgeRow[] {
     cumDiag.partner += diagonalCount(plan.transfers, ym, 'partner') * retentionMB
     cumDiag.vendor += diagonalCount(plan.transfers, ym, 'vendor') * retentionMB
 
+    // 件数は浮動小数で保持（retention に対する連続性を確保）。
+    // 整数化は表示・最終出力ステップでのみ行う。
     for (const c of WorkerCategoryOrder) {
-      counts[c] = Math.max(0, Math.round(counts[c]))
-      countsAcqTerm[c] = Math.max(0, Math.round(countsAcqTerm[c]))
+      counts[c] = Math.max(0, counts[c])
+      countsAcqTerm[c] = Math.max(0, countsAcqTerm[c])
     }
 
     const days = workingDaysOf(plan, ym)

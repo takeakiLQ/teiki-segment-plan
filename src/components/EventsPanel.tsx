@@ -1822,9 +1822,9 @@ function TransfersList() {
               <span style={{ color: '#6b21a8' }}>構成比インパクト（非対角）・同区分uplift 原価 の両方に同じ係数が掛かります。</span>
             </div>
             <div style={{ fontSize: 11, marginTop: 6, padding: 6, background: '#fff', borderRadius: 4, border: '1px dashed #d8b4fe', color: '#6b21a8' }}>
-              ℹ️ <strong>注:</strong> Dashboard の「入替（年間）」カードの表示数字と、年間粗利計画の増減は <strong>厳密には一致しません</strong>。<br />
-              係数を下げるとプールの構成比が変わり、終了単価補正・単価アップの累積・原価率モデルなど複数の計算式に同時に波及するため、<br />
-              粗利計画の改善幅は Dashboard 表示のインパクト差分より <strong>小さめに出る</strong>ことがあります（物理的には案B=両方適用が正）。
+              ℹ️ <strong>注:</strong> 月次件数を浮動小数で保持して計算しているため、係数を 1% 単位で動かしても粗利は <strong>滑らかに連続変化</strong>します。<br />
+              Dashboard の「入替（年間）」カードの表示数字と、年間粗利計画の増減は終了単価補正・単価アップ累積・原価率モデルへの波及で <strong>厳密には一致しません</strong>が、<br />
+              粗利計画の改善幅は概ね Dashboard インパクト差分に比例して動きます。
             </div>
           </div>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
